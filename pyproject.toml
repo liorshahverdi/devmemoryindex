@@ -8,6 +8,10 @@ dependencies = []
 [dependency-groups]
 dev = [
     "pytest>=9.0",
+    "sentence-transformers",
+    "lancedb",
+    "fastapi",
+    "uvicorn"
 ]
 
 [build-system]
