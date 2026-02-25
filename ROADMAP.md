@@ -14,15 +14,23 @@
 |---|---|---|
 | `core/schema.py` — Memory dataclass | **Done** | id, type, summary, raw_text, source, repo, timestamp, tags, importance |
 | `core/embeddings.py` — BAAI/bge-small-en (384d) | **Done** | `embed()` and `embed_batch()` working |
-| `core/memory_store.py` — MemoryStore class | **Done** | `add()`, `semantic_search()`, `delete()`, `count()`, `get_all()`. Legacy global functions removed. |
+| `core/memory_store.py` — MemoryStore class | **Done** | `add()`, `semantic_search()`, `hybrid_search()`, `delete()`, `count()`, `get_all()`. Uses `compute_score` from ranking module. |
 | `core/store_provider.py` — Singleton factory | **Done** | `get_store()` returns shared `MemoryStore` instance |
+| `core/ranking.py` — Scoring formula | **Done** | `recency_score()`, `compute_score()` — weights: similarity 0.6, importance 0.25, recency 0.15 |
 | `core/tests/test_schema.py` | **Done** | Memory creation, field validation, default importance |
-| `core/tests/test_memory_store.py` | **Done** | Tests use `MemoryStore` class directly with `tmp_path` isolation. All 3 tests passing. |
+| `core/tests/test_memory_store.py` | **1 Failing** | 3 tests; `test_add_memory` fails because `get_all()` calls `.to_pandas()` and `pandas` is not installed. Other 2 pass. |
+| `core/tests/test_ranking.py` | **Done** | 11 tests — recency decay, score formula, ranking order. All passing. |
+| `core/tests/test_hybrid_search.py` | **Done** | 5 tests — keyword surfacing, deduplication, hybrid-vs-semantic, importance ranking, k limit. All passing. |
 | `core/tests/try_queries.py` | **Broken** | Still uses removed legacy functions (`save_memory`, `search_memory`). Needs migration to `MemoryStore`. |
+| `cli/main.py` — Typer entrypoint | **Done** | Registers `search`, `add`, `stats` commands. `devmemory` CLI works. |
+| `cli/commands/search.py` | **Done** | Working, but still calls `semantic_search()` — needs upgrade to `hybrid_search()`. |
+| `cli/commands/add.py` | **Done** | Manual memory insertion via CLI. |
+| `cli/commands/stats.py` | **Done** | Shows total count and type breakdown (uses `to_arrow()` instead of `to_pandas()`). |
+| `pyproject.toml` | **Done** | `[project.scripts]` registered, hatchling build, dev deps configured. |
 | Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/` directories created |
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
 
-**What's empty:** `connectors/`, `cli/`, `api/`, `daemon/` — all currently have no files.
+**What's empty:** `connectors/`, `api/`, `daemon/` — all currently have no files.
 
 ---
 
@@ -132,9 +140,23 @@ Implemented as designed — `get_store(db_path)` returns a singleton `MemoryStor
 
 ---
 
-### 1.3 CLI Bootstrap (Scaffold + First Commands)
+### 1.3 CLI Bootstrap (Scaffold + First Commands) ✅
 
-> **Why now?** The CLI entrypoint and at least one working command should exist as soon as the core engine is functional. This gives you a usable `devmemory` command immediately — you don't need connectors, the API, or the daemon to start searching and adding memories from the terminal.
+**Status: COMPLETED**
+
+All 6 files created and working:
+- `cli/__init__.py`, `cli/commands/__init__.py` — package inits
+- `cli/main.py` — Typer entrypoint registering `search`, `add`, `stats`
+- `cli/commands/search.py` — search memories (currently uses `semantic_search()`, upgrade to `hybrid_search()` pending)
+- `cli/commands/add.py` — manual memory insertion
+- `cli/commands/stats.py` — memory store statistics (adapted to use `to_arrow()` instead of `to_pandas()`)
+
+`pyproject.toml` has `[project.scripts] devmemory = "cli.main:app"` registered.
+
+**Remaining:** Upgrade `search.py` to call `hybrid_search()` now that Phase 1.5 is complete.
+
+<details>
+<summary>Original implementation spec (preserved for reference)</summary>
 
 **Dependencies:** `typer`, `rich` — install with `uv add typer rich`
 
@@ -330,15 +352,22 @@ devmemory stats                           # shows 1 memory
 
 **Done when:** All four commands above work. The CLI is usable even with zero connectors.
 
-## stopPed hErE ##
+</details>
 
-**Upgrade path:** After Phase 1.5 (hybrid search), update `cli/commands/search.py` to call `store.hybrid_search(query, vector, k=...)` instead of `store.semantic_search(vector, k=...)`.
+**Upgrade path:** Phase 1.5 (hybrid search) is now complete. Update `cli/commands/search.py` to call `store.hybrid_search(query, vector, k=...)` instead of `store.semantic_search(vector, k=...)`.
 
 ---
 
-### 1.4 Implement Ranking Module
+### 1.4 Implement Ranking Module ✅
 
-**File:** `core/ranking.py`
+**Status: COMPLETED**
+
+**File:** `core/ranking.py` — implemented as designed with `recency_score()` and `compute_score()`.
+
+**Tests:** `core/tests/test_ranking.py` — 11 tests covering recency decay, score formula, default handling, and ranking order. All passing.
+
+<details>
+<summary>Original implementation spec (preserved for reference)</summary>
 
 Scoring formula:
 ```
@@ -363,19 +392,29 @@ def compute_score(result: dict) -> float:
     return semantic * 0.6 + importance * 0.25 + recency * 0.15
 ```
 
-**Tests:** Create `core/tests/test_ranking.py` — verify that newer + higher-importance memories outrank older + lower-importance ones for equal similarity.
-
-**Done when:** `compute_score()` returns a float and ranking order matches intuition.
+</details>
 
 ---
 
-### 1.5 Implement Hybrid Search
+### 1.5 Implement Hybrid Search ✅
 
-**Add to `MemoryStore` class in `core/memory_store.py`:**
+**Status: COMPLETED**
+
+**File:** `core/memory_store.py` — `hybrid_search()` method added. Combines semantic search (vector similarity) with keyword search (`LIKE` on summary), deduplicates by id, and ranks using `compute_score()` from the ranking module.
+
+**Tests:** `core/tests/test_hybrid_search.py` — 5 tests:
+- Keyword match surfaces despite weak embedding similarity
+- Deduplication (same memory from both paths appears only once)
+- Hybrid returns better results than semantic alone for keyword queries
+- Higher importance ranks higher among keyword matches
+- Respects k limit
+
+All 5 passing.
+
+<details>
+<summary>Original implementation spec (preserved for reference)</summary>
 
 ```python
-from core.ranking import compute_score
-
 def hybrid_search(self, query: str, vector: list, k: int = 5) -> list:
     # 1. Semantic search — over-retrieve
     semantic_results = self.collection.search(vector).limit(50).to_list()
@@ -399,18 +438,13 @@ def hybrid_search(self, query: str, vector: list, k: int = 5) -> list:
         if r["id"] not in combined:
             combined[r["id"]] = r
 
-    # 4. Score and rank
+    # 4. Score and rank using compute_score from core.ranking
     ranked = sorted(combined.values(), key=compute_score, reverse=True)
 
     return ranked[:k]
 ```
 
-**Tests:** Create `core/tests/test_hybrid_search.py`:
-- Insert memories with overlapping keywords and varying importance.
-- Query with a keyword that appears in summary — verify it surfaces even if embedding similarity is mediocre.
-- Verify deduplication (same memory from both paths appears only once).
-
-**Done when:** `hybrid_search()` returns better results than `semantic_search()` alone for developer-specific queries.
+</details>
 
 ---
 
@@ -1763,37 +1797,40 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 
 ## Execution Order Summary
 
-| Priority | Phase | What You Build | Depends On |
-|---|---|---|---|
-| **Now** | 1.1–1.2 | Finish MemoryStore class, store provider | Schema + embeddings (done) |
-| **Now** | 1.3 | **CLI scaffold + `search`, `add`, `stats` commands** | Phase 1.1–1.2 |
-| **Now** | 1.4–1.5 | Ranking module, hybrid search | Phase 1.1 |
-| **Now** | 1.6–1.7 | Context engine, content hashing | Phase 1.4–1.5 |
-| **Now** | 3.2b | **CLI `context` command** | Phase 1.6 |
-| **Next** | 2 | Connectors (git, terminal, filesystem, markdown, claude, copilot) | Phase 1.7 |
-| **Next** | 3.2a | **CLI `ingest` command** | Phase 2 |
-| **Next** | 4 | API (search, remember, context endpoints) | Phase 1.6 |
-| **Next** | 5 | Daemon (scheduler, watcher, decay) | Phase 2 |
-| **Next** | 5+3.2c | **CLI `daemon` command** | Phase 5 |
-| **Later** | 6 | Intelligence (reinforcement, dedup, compression, auto-context) | Phases 1–5 |
-| **Future** | 7 | Advanced (LLM, VSCode, web UI, agent mode) | Phases 1–6 |
+| Priority | Phase | What You Build | Depends On | Status |
+|---|---|---|---|---|
+| ~~Done~~ | 1.1–1.2 | MemoryStore class, store provider | Schema + embeddings | ✅ |
+| ~~Done~~ | 1.3 | CLI scaffold + `search`, `add`, `stats` | Phase 1.1–1.2 | ✅ |
+| ~~Done~~ | 1.4–1.5 | Ranking module, hybrid search | Phase 1.1 | ✅ |
+| **Now** | — | **Cleanup: upgrade search.py to hybrid, fix test_memory_store, delete try_queries** | Phase 1.5 | |
+| **Now** | 1.6–1.7 | Context engine, content hashing | Phase 1.4–1.5 | |
+| **Now** | 3.2b | **CLI `context` command** | Phase 1.6 | |
+| **Next** | 2 | Connectors (git, terminal, filesystem, markdown, claude, copilot) | Phase 1.7 | |
+| **Next** | 3.2a | **CLI `ingest` command** | Phase 2 | |
+| **Next** | 4 | API (search, remember, context endpoints) | Phase 1.6 | |
+| **Next** | 5 | Daemon (scheduler, watcher, decay) | Phase 2 | |
+| **Next** | 5+3.2c | **CLI `daemon` command** | Phase 5 | |
+| **Later** | 6 | Intelligence (reinforcement, dedup, compression, auto-context) | Phases 1–5 | |
+| **Future** | 7 | Advanced (LLM, VSCode, web UI, agent mode) | Phases 1–6 | |
 
 ---
 
 ## Testing Strategy
 
-| Component | Test Approach |
-|---|---|
-| Memory schema | Unit test: create objects, verify fields and defaults |
-| MemoryStore | Unit test with temp LanceDB dir: add, search, delete, count |
-| Ranking | Unit test: verify scoring formula and sort order |
-| Hybrid search | Integration test: insert diverse memories, verify keyword+semantic mix |
-| Context engine | Integration test: verify token budget, dedup, format output |
-| Each connector | Unit test with mock data (temp repos, fake history files, mock JSON) |
-| CLI | End-to-end: run commands, verify stdout output |
-| API | HTTP tests with FastAPI TestClient |
-| Daemon | Integration test: verify connector runs produce new memories |
+| Component | Test Approach | Status |
+|---|---|---|
+| Memory schema | Unit test: create objects, verify fields and defaults | ✅ 3 passing |
+| MemoryStore | Unit test with temp LanceDB dir: add, search, delete, count | ⚠️ 1 failing (pandas) |
+| Ranking | Unit test: verify scoring formula and sort order | ✅ 11 passing |
+| Hybrid search | Integration test: insert diverse memories, verify keyword+semantic mix | ✅ 5 passing |
+| Context engine | Integration test: verify token budget, dedup, format output | Not started |
+| Each connector | Unit test with mock data (temp repos, fake history files, mock JSON) | Not started |
+| CLI | End-to-end: run commands, verify stdout output | Not started |
+| API | HTTP tests with FastAPI TestClient | Not started |
+| Daemon | Integration test: verify connector runs produce new memories | Not started |
+
+**Test totals:** 23 passing, 1 failing (out of 24 collected — `try_queries.py` not collected by pytest)
 
 ---
 
-*Last updated: February 2026*
+*Last updated: February 25, 2026*

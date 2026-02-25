@@ -14,6 +14,7 @@ devmemory = "cli.main:app"
 [dependency-groups]
 dev = [
     "pytest>=9.0",
+    "pandas",
     "sentence-transformers",
     "lancedb",
     "fastapi",
