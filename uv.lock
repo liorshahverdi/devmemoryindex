@@ -102,10 +102,15 @@ wheels = [
 name = "devmemoryindex"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "rich" },
+    { name = "typer" },
+]
 
 [package.dev-dependencies]
 dev = [
     { name = "fastapi" },
+    { name = "huggingface-hub" },
     { name = "lancedb" },
     { name = "pytest" },
     { name = "sentence-transformers" },
@@ -113,10 +118,15 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [
+    { name = "rich", specifier = ">=14.3.3" },
+    { name = "typer", specifier = ">=0.24.1" },
+]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "fastapi" },
+    { name = "huggingface-hub", specifier = ">=1.4.1" },
     { name = "lancedb" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "sentence-transformers" },

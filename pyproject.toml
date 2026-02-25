@@ -3,7 +3,13 @@ name = "devmemoryindex"
 version = "0.1.0"
 description = "Developer memory index"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "rich>=14.3.3",
+    "typer>=0.24.1",
+]
+
+[project.scripts]
+devmemory = "cli.main:app"
 
 [dependency-groups]
 dev = [
@@ -11,7 +17,8 @@ dev = [
     "sentence-transformers",
     "lancedb",
     "fastapi",
-    "uvicorn"
+    "uvicorn",
+    "huggingface-hub>=1.4.1",
 ]
 
 [build-system]

@@ -1,16 +1,13 @@
 import pytest
-import tempfile
-import lancedb
 from datetime import datetime
-from core.memory_store import save_memory, search_memory, _schema, VECTOR_DIM
+from core.memory_store import MemoryStore, VECTOR_DIM
 from core.schema import Memory
 
 
 @pytest.fixture
-def collection(tmp_path):
-    """Create a LanceDB table in a temp directory for testing."""
-    db = lancedb.connect(str(tmp_path))
-    return db.create_table("memories", schema=_schema)
+def store(tmp_path):
+    """Create a MemoryStore backed by a temp directory for testing."""
+    return MemoryStore(db_path=str(tmp_path))
 
 
 @pytest.fixture
@@ -35,22 +32,22 @@ def sample_vector():
     return [0.1] * VECTOR_DIM
 
 
-def test_save_memory(collection, sample_memory, sample_vector):
-    """Test that save_memory inserts the correct data into the collection."""
-    save_memory(sample_memory, sample_vector, collection=collection)
+def test_add_memory(store, sample_memory, sample_vector):
+    """Test that add inserts the correct data into the store."""
+    store.add(sample_memory, sample_vector)
 
-    rows = collection.to_arrow().to_pydict()
-    assert len(rows["id"]) == 1
-    assert rows["id"][0] == "test-1"
-    assert rows["type"][0] == "code_snippet"
-    assert rows["summary"][0] == "Redis timeout handling"
+    assert store.count() == 1
+    rows = store.get_all()
+    assert rows[0]["id"] == "test-1"
+    assert rows[0]["type"] == "code_snippet"
+    assert rows[0]["summary"] == "Redis timeout handling"
 
 
-def test_save_memory_with_search(collection, sample_memory, sample_vector):
-    """Test saving a memory and retrieving it via search."""
-    save_memory(sample_memory, sample_vector, collection=collection)
+def test_add_and_search_memory(store, sample_memory, sample_vector):
+    """Test saving a memory and retrieving it via semantic search."""
+    store.add(sample_memory, sample_vector)
 
-    results = search_memory(sample_vector, n_results=1, collection=collection)
+    results = store.semantic_search(sample_vector, k=1)
 
     assert len(results) == 1
     assert results[0]["id"] == "test-1"
@@ -59,7 +56,7 @@ def test_save_memory_with_search(collection, sample_memory, sample_vector):
     assert results[0]["importance"] == pytest.approx(0.8)
 
 
-def test_search_multiple_memories(collection, sample_vector):
+def test_search_multiple_memories(store, sample_vector):
     """Test searching across multiple saved memories returns ranked results."""
     memories = [
         Memory(
@@ -76,12 +73,9 @@ def test_search_multiple_memories(collection, sample_vector):
         ),
     ]
     for mem in memories:
-        save_memory(mem, sample_vector, collection=collection)
+        store.add(mem, sample_vector)
 
-    results = search_memory(sample_vector, n_results=2, collection=collection)
-    # print("\n=== Search Results ===")
-    # for r in results:
-    #     print (r)
-    # assert len(results) == 2
+    results = store.semantic_search(sample_vector, k=2)
+    assert len(results) == 2
     returned_ids = {r["id"] for r in results}
     assert returned_ids == {"m1", "m2"}
