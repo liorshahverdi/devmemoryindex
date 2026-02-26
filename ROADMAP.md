@@ -26,7 +26,7 @@
 | `cli/commands/search.py` | **Done** | Upgraded to `hybrid_search()`. Supports `--type` and `--repo` filters. |
 | `cli/commands/add.py` | **Done** | Manual memory insertion via CLI. |
 | `cli/commands/stats.py` | **Done** | Shows total count and type breakdown (uses `to_arrow()` instead of `to_pandas()`). |
-| `core/context_engine.py` — ContextEngine class | **Done** | `build()` — hybrid search → repo filter → dedup → token packing → format ("raw"/"claude"/"markdown"). `DEFAULT_TOKEN_BUDGET = 4000`. |
+| `core/context_engine.py` — ContextEngine class | **Partial** | `build()` structure, `token_budget.py`, `context_engine.py` file created. Remaining: full `ContextEngine` implementation per Phase 1.6 spec, and `core/tests/test_context_engine.py` (4 tests not yet written). |
 | `core/token_budget.py` — Token estimation | **Done** | `estimate_tokens()`, `pack_within_budget()` — enforces max_tokens and max_items limits. |
 | `pyproject.toml` | **Done** | `[project.scripts]` registered, hatchling build, dev deps configured. |
 | Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/` directories created |
@@ -461,9 +461,17 @@ def hybrid_search(self, query: str, vector: list, k: int = 5) -> list:
 </details>
 
 ---
-### 1.6 Implement Context Engine ✅
+### 1.6 Implement Context Engine ⚠️
 
-**Status: COMPLETED**
+**Status: PARTIALLY COMPLETE**
+
+**What is done:**
+- `core/context_engine.py` file created with `ContextEngine.build()` structure (hybrid search → repo filter → dedup → token packing → format).
+- `core/token_budget.py` — `estimate_tokens()` and `pack_within_budget()` implemented.
+
+**What remains:**
+- Full implementation of `ContextEngine` class matching the spec below (the spec is the target state, not the current implementation).
+- `core/tests/test_context_engine.py` — 4 tests not yet written (build context for known query, token budget truncation, repo filter, format modes).
 
 **File:** `core/context_engine.py`
 
@@ -722,6 +730,11 @@ from connectors.copilot_connector import CopilotConnector
 from connectors.voice_connector import VoiceConnector
 from connectors.browser_connector import BrowserConnector
 
+# VoiceConnector intentionally excluded from ALL_CONNECTORS.
+# It is triggered only by explicit user commands:
+#   devmemory dictate
+#   devmemory search --voice
+# Running it on a schedule records silence, noise, and other people's speech.
 ALL_CONNECTORS = [
     GitConnector,
     TerminalConnector,
@@ -729,9 +742,12 @@ ALL_CONNECTORS = [
     MarkdownConnector,
     ClaudeConnector,
     CopilotConnector,
-    VoiceConnector,
+    # VoiceConnector — NOT here. Use VoiceConnector() directly in CLI commands.
     BrowserConnector,
 ]
+
+# For explicit CLI use only (devmemory dictate, devmemory search --voice)
+VOICE_ONLY_CONNECTORS = [VoiceConnector]
 
 def get_connectors(names: list[str] | None = None) -> list:
     if names is None:
@@ -739,7 +755,7 @@ def get_connectors(names: list[str] | None = None) -> list:
     return [C() for C in ALL_CONNECTORS if C.name in names]
 ```
 
-**Done when:** `get_connectors()` returns instantiated connector list. `get_connectors(["git"])` returns only GitConnector.
+**Done when:** `get_connectors()` returns instantiated connector list. `get_connectors(["git"])` returns only GitConnector. VoiceConnector is not included in daemon runs.
 
 ---
 
@@ -1415,6 +1431,37 @@ class VoiceConnector(Connector):
         if not text:
             return 0
 
+        # Guard A — Noise gate: reject mostly-silent recordings
+        segments = result.get("segments", [])
+        if segments:
+            avg_no_speech = sum(s.get("no_speech_prob", 0.0) for s in segments) / len(segments)
+            if avg_no_speech > 0.6:
+                return 0  # Mostly silence or background noise — discard
+
+        # Guard A — Minimum word count gate (Whisper can hallucinate short phrases from noise)
+        if len(text.split()) < 4:
+            return 0
+
+        # Guard B — Speaker identity check (enrolled profile gate)
+        from core.speaker_profile import PROFILE_PATH, load_profile, is_self
+
+        if PROFILE_PATH.exists():
+            profile = load_profile()
+            seg_emb = self._extract_speaker_embedding(f.name)
+            if seg_emb is not None and not is_self(seg_emb, profile, threshold=0.3):
+                mem_type = "voice_ambient"
+                importance = 0.3
+                tags = ["voice", "ambient"]
+            else:
+                mem_type = "voice_note"
+                importance = 0.8
+                tags = ["voice"]
+        else:
+            # No profile enrolled — store as voice_note but flag it
+            mem_type = "voice_note"
+            importance = 0.8
+            tags = ["voice"]
+
         mem_id = hashlib.sha256((text + "voice").encode()).hexdigest()
 
         if self.store.exists(mem_id):
@@ -1422,18 +1469,27 @@ class VoiceConnector(Connector):
 
         memory = Memory(
             id=mem_id,
-            type="voice_note",
+            type=mem_type,
             summary=text[:200],
             raw_text=text,
             source="voice",
             repo=self.repo,
             timestamp=datetime.utcnow(),
-            tags=["voice"],
-            importance=0.8,
+            tags=tags,
+            importance=importance,
         )
 
         self.store.add(memory, embed(memory.summary))
         return 1
+
+    def _extract_speaker_embedding(self, wav_path: str):
+        """Extract speaker embedding using pyannote/embedding. Returns None on failure."""
+        try:
+            from pyannote.audio import Model, Inference
+            model = Model.from_pretrained("pyannote/embedding", use_auth_token=True)
+            return Inference(model, window="whole")(wav_path)
+        except Exception:
+            return None
 ```
 
 **Model tradeoffs:**
@@ -1446,10 +1502,22 @@ class VoiceConnector(Connector):
 
 Use `small` for developer dictation — technical vocabulary benefits from the larger model.
 
+**Memory types produced by VoiceConnector:**
+
+| Type | Source | Importance | Tags |
+|---|---|---|---|
+| `voice_note` | `VoiceConnector` (user identified or no profile enrolled) | 0.8 | `["voice"]` |
+| `voice_ambient` | `VoiceConnector` (other speaker detected) | 0.3 | `["voice", "ambient"]` |
+
 **Tests:** `connectors/tests/test_voice_connector.py`
 - Mock `sd.rec` and `whisper.load_model` to return a known transcript.
 - Verify memory is created with `type="voice_note"`, correct summary, and `source="voice"`.
 - Verify `store.exists()` prevents duplicate indexing of identical transcripts.
+- Test: silent recording (all segments have `no_speech_prob > 0.6`) → `collect()` returns 0, no memory stored.
+- Test: short transcript (< 4 words after strip) → `collect()` returns 0.
+- Test: enrolled profile present, `_extract_speaker_embedding` returns non-matching embedding → stores `voice_ambient` at `importance=0.3` with `tags=["voice", "ambient"]`.
+- Test: enrolled profile present, `_extract_speaker_embedding` returns matching embedding → stores `voice_note` at `importance=0.8`.
+- Test: no profile enrolled (`PROFILE_PATH` does not exist) → stores `voice_note` at `importance=0.8`.
 
 **Done when:** `devmemory dictate` records, transcribes, and indexes speech. `devmemory search "redis timeout"` finds a memory that was spoken, not typed.
 
@@ -2706,6 +2774,53 @@ app.command()(repl)
 
 ---
 
+#### 3.2k Prune Command (Requires Phase 5.4B — Memory Pruning)
+
+**File:** `cli/commands/prune.py`
+
+```python
+import typer
+from rich.console import Console
+from daemon.jobs.memory_cleanup import prune_memories, PRUNE_IMPORTANCE_FLOOR, PRUNE_MAX_AGE_DAYS
+
+console = Console()
+
+def prune(
+    importance_floor: float = typer.Option(PRUNE_IMPORTANCE_FLOOR, "--floor", "-f",
+        help="Delete memories with importance below this threshold"),
+    max_age_days: int = typer.Option(PRUNE_MAX_AGE_DAYS, "--age", "-a",
+        help="Delete memories older than N days with low importance"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+        help="Preview deletions without removing anything"),
+):
+    """Remove underutilized memories to reclaim database space."""
+    count = prune_memories(
+        importance_floor=importance_floor,
+        max_age_days=max_age_days,
+        dry_run=dry_run,
+    )
+    label = "Would delete" if dry_run else "Deleted"
+    color = "yellow" if dry_run else "green"
+    console.print(f"[{color}]{label} {count} memories.[/{color}]")
+```
+
+Register in `cli/main.py`:
+```python
+from cli.commands.prune import prune
+app.command()(prune)
+```
+
+Usage:
+```bash
+devmemory prune                          # delete underutilized memories
+devmemory prune --dry-run                # preview without deleting
+devmemory prune --floor 0.1 --age 60    # stricter thresholds
+```
+
+**Done when:** `devmemory prune` removes decayed memories and reports count. `devmemory prune --dry-run` previews deletions without modifying the store.
+
+---
+
 ## Phase 4 — API (Agent Interface)
 
 > **Status: NOT STARTED** — `api/` directory is empty.
@@ -3057,17 +3172,143 @@ def decay_importance(factor: float = 0.99):
 
 ---
 
+### 5.4 Access Reinforcement + Memory Pruning
+
+**Status: PENDING** — Depends on Phase 5.3 (decay) and Phase 1.5 (search methods).
+
+This phase pulls Phase 6.1 (Importance Reinforcement) forward because the pruning system must be aware of access patterns. A memory queried yesterday should not be pruned, even if it is old.
+
+---
+
+#### 5.4A — Access Reinforcement (pulled forward from Phase 6.1)
+
+**Add `reinforce()` to `MemoryStore`** (`core/memory_store.py`):
+
+```python
+def reinforce(self, memory_id: str, boost: float = 0.05) -> None:
+    """Boost importance of a retrieved memory (cap at 1.0). Call after search hits."""
+    try:
+        results = self.collection.search().where(f"id = '{memory_id}'").limit(1).to_list()
+        if not results:
+            return
+        r = results[0]
+        new_importance = min(1.0, r.get("importance", 0.5) + boost)
+        # LanceDB update via merge_insert on single row
+        import pyarrow as pa
+        tbl = pa.table({"id": [memory_id], "importance": [new_importance]})
+        self.collection.merge_insert("id").when_matched_update_all().execute(tbl)
+    except Exception:
+        pass  # Non-critical
+```
+
+**Call `reinforce()` from search methods** — after `hybrid_search()` and `semantic_search()` return results, boost each returned memory's importance:
+
+```python
+# In hybrid_search() and semantic_search(), after building ranked list:
+for r in ranked[:k]:
+    self.reinforce(r["id"], boost=0.05)
+return ranked[:k]
+```
+
+> **Effect on pruning:** A memory queried even once per month at 0.05 boost/query will offset the 0.99 daily decay (~0.70 per month decay vs. 0.05+ boost). Only memories that are genuinely never retrieved will decay past the prune floor.
+
+---
+
+#### 5.4B — Memory Pruning Job
+
+**File:** `daemon/jobs/memory_cleanup.py`
+
+```python
+from datetime import datetime, timedelta
+from core.store_provider import get_store
+
+PRUNE_IMPORTANCE_FLOOR = 0.05   # Memories decayed below this → pruneable
+PRUNE_MAX_AGE_DAYS     = 90     # Memories older than this AND weak → pruneable
+PRUNE_OLD_IMPORTANCE   = 0.15   # Importance threshold for the age-based rule
+
+def prune_memories(
+    importance_floor: float = PRUNE_IMPORTANCE_FLOOR,
+    max_age_days: int = PRUNE_MAX_AGE_DAYS,
+    dry_run: bool = False,
+) -> int:
+    """Delete underutilized memories. Respects pinned flag. Returns count deleted.
+
+    Two pruning criteria (either qualifies):
+    1. importance < importance_floor  (decayed past point of usefulness, regardless of age)
+    2. older than max_age_days AND importance < PRUNE_OLD_IMPORTANCE  (old and weak)
+
+    Memories with any recent retrieval will have boosted importance and survive.
+    Pinned memories are always skipped.
+    """
+    store = get_store()
+    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+
+    try:
+        all_records = store.collection.to_arrow().to_pylist()
+    except Exception:
+        return 0
+
+    to_delete = []
+    for r in all_records:
+        if r.get("pinned", False):
+            continue
+        importance = r.get("importance", 0.5)
+        ts = r.get("timestamp")
+
+        below_floor = importance < importance_floor
+        old_and_weak = ts is not None and ts < cutoff and importance < PRUNE_OLD_IMPORTANCE
+
+        if below_floor or old_and_weak:
+            to_delete.append(r["id"])
+
+    if not dry_run:
+        for mem_id in to_delete:
+            store.delete(mem_id)
+
+    return len(to_delete)
+```
+
+**Integrate into scheduler** (`daemon/scheduler.py`) — run `prune_memories()` once daily:
+
+```python
+import time
+from datetime import date
+from daemon.jobs.memory_cleanup import prune_memories
+
+def run_daemon(interval: int = 300):
+    last_prune_date = None
+    while True:
+        # ... run connectors as before ...
+
+        today = date.today()
+        if last_prune_date != today:
+            pruned = prune_memories()
+            if pruned > 0:
+                console.print(f"[dim]Pruned {pruned} underutilized memories[/dim]")
+            last_prune_date = today
+
+        time.sleep(interval)
+```
+
+**Tests:** `daemon/tests/test_memory_cleanup.py`
+- Insert 5 low-importance (0.02) unpinned memories + 1 pinned (0.02) → `prune_memories()` deletes 5, skips pinned.
+- Insert 3 old (100+ days) weak-importance (0.1) memories → all 3 pruned.
+- Insert 2 recently-reinforced high-importance (0.8) memories → none pruned.
+- Dry run: returns correct count but store row count is unchanged.
+- `reinforce()` test: boost a 0.5 importance memory → becomes 0.55; cap at 1.0 when already 0.98.
+
+**Done when:** Running `devmemory daemon` auto-prunes underutilized memories daily. `devmemory prune --dry-run` previews deletions without removing anything.
+
+---
+
 ## Phase 6 — Intelligence Layer (Post-Launch)
 
 > These features turn DevMemoryIndex from a memory store into a cognitive system.
 > Build these after Phases 1–5 are working and you use the tool daily.
 
-### 6.1 Importance Reinforcement
-When a memory is retrieved via search or context, boost its importance:
-```python
-def reinforce(self, memory_id: str, boost: float = 0.05):
-    # Increase importance (cap at 1.0)
-```
+### 6.1 Importance Reinforcement *(moved to Phase 5.4A)*
+
+> **This item has been pulled forward to Phase 5.4A** and fully specified there — including the `reinforce()` implementation on `MemoryStore` and the search-hook integration. See Phase 5.4A for the complete spec.
 
 ### 6.2 Memory Deduplication
 Periodically scan for near-duplicate memories (similar summary text) and merge them, keeping the higher-importance version.
@@ -3151,11 +3392,11 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | ~~Done~~ | 1.3 | CLI scaffold + `search`, `add`, `stats` | Phase 1.1–1.2 | ✅ |
 | ~~Done~~ | 1.4–1.5 | Ranking module, hybrid search | Phase 1.1 | ✅ |
 | **Now** | — | **Cleanup: upgrade search.py to hybrid, fix test_memory_store, delete try_queries** | Phase 1.5 | |
-| **Now** | 1.6–1.7 | Context engine, content hashing | Phase 1.4–1.5 | |
+| **Now** | 1.6–1.7 | Context engine, content hashing | Phase 1.4–1.5 | ⚠️ Partially done — `ContextEngine` file created, tests pending |
 | **Now** | 3.2b | **CLI `context` command** | Phase 1.6 | |
 | **Next** | 1.8 | **Privacy / Redaction Filter** (`core/privacy.py`, hook into base connector) | Phase 1.7 | |
 | **Next** | 2 | Connectors (git, terminal, filesystem, markdown, claude, copilot) | Phase 1.7 | |
-| **Next** | 2.9 | **Voice Connector** (`VoiceConnector` + Whisper STT) | Phase 2 | |
+| **Next** | 2.9 (update) | **VoiceConnector quality gates** (noise gate, speaker ID, registry exclusion) | Phase 2.9b (`speaker_profile`) | |
 | **Next** | 2.9b | **Meeting Connector** (`MeetingConnector` + `speaker_profile.py` + `enroll` command) | Phase 2.9 | |
 | **Next** | 2.10 | **Browser Bookmarks Connector** (Chrome JSON + Firefox SQLite) | Phase 2 | |
 | **Next** | 3.2a | **CLI `ingest` command** | Phase 2 | |
@@ -3166,11 +3407,14 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | **Next** | 3.2h | **CLI `export` / `import` commands** | Phase 1 | |
 | **Next** | 3.2i | **CLI `audit` command** | Phase 1.5 | |
 | **Next** | 3.2j | **CLI `repl` command** | Phase 1 | |
+| **Next** | 3.2k | **CLI `prune` command** | Phase 5.4B | |
 | **Next** | 4 | API (search, remember, context endpoints) | Phase 1.6 | |
 | **Next** | 4.5 | **Webhook `POST /ingest`** (CI/CD push ingest) | Phase 4 | |
 | **Next** | 5 | Daemon (scheduler, watcher, decay) | Phase 2 | |
 | **Next** | 5+3.2c | **CLI `daemon` command** | Phase 5 | |
-| **Later** | 6 | Intelligence (reinforcement, dedup, compression, auto-context) | Phases 1–5 | |
+| **Next** | 5.4A | **`MemoryStore.reinforce()` + call from search methods** | Phase 1.5 | |
+| **Next** | 5.4B | **Memory pruning job + `devmemory prune` CLI** | Phase 5.3, 5.4A | |
+| **Later** | 6 | Intelligence (dedup, compression, auto-context; reinforcement moved to 5.4A) | Phases 1–5 | |
 | **Future** | 7 | Advanced (LLM, VSCode, web UI, agent mode) | Phases 1–6 | |
 
 ---
@@ -3185,7 +3429,7 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | Hybrid search | Integration test: insert diverse memories, verify keyword+semantic mix | ✅ 5 passing |
 | Context engine | Integration test: verify token budget, dedup, format output | Not started |
 | Each connector | Unit test with mock data (temp repos, fake history files, mock JSON) | Not started |
-| Voice connector | Unit test with mocked `sd.rec` and `whisper.load_model` returning known transcript | Not started |
+| Voice connector | Unit test with mocked `sd.rec` and `whisper.load_model`: noise gate (high `no_speech_prob` → 0), short transcript (< 4 words → 0), non-matching speaker → `voice_ambient`, matching speaker → `voice_note`, no profile → `voice_note` | Not started |
 | Speaker profile | Unit test: save/load roundtrip, `is_self` with identical/orthogonal/boundary embeddings | Not started |
 | Meeting connector | Unit test with mocked transcript + diarization + embeddings: verify `meeting_self`/`meeting_context` types, importance, tags, dedup | Not started |
 | Privacy filter | Unit test: API key / bearer token patterns → `[REDACTED]`; clean text unchanged | Not started |
@@ -3197,6 +3441,8 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | REPL | Integration test: mock `input()` to feed queries, verify results are printed | Not started |
 | Webhook | HTTP test with FastAPI TestClient: `POST /memory/ingest` creates memory; duplicate returns `"duplicate"` | Not started |
 | CLI | End-to-end: run commands, verify stdout output | Not started |
+| `MemoryStore.reinforce()` | Unit test: boost 0.5 → 0.55; cap at 1.0 from 0.98; no-op for unknown ID | Not started |
+| Memory cleanup | Unit test: low-importance memories deleted; pinned skipped; old+weak deleted; high-importance kept; dry-run returns count without deletion | Not started |
 | API | HTTP tests with FastAPI TestClient | Not started |
 | Daemon | Integration test: verify connector runs produce new memories | Not started |
 
@@ -3204,4 +3450,4 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 
 ---
 
-*Last updated: February 26, 2026 — Added Phase 2.9b: Meeting Connector + Speaker Identification*
+*Last updated: February 26, 2026 — Fixed Phase 1.6 status (PARTIALLY COMPLETE); added VoiceConnector quality gates (noise gate, speaker ID, registry exclusion) to Phase 2.9; added Phase 5.4 (Access Reinforcement + Memory Pruning); added `devmemory prune` CLI command; moved Phase 6.1 Importance Reinforcement to Phase 5.4A*
