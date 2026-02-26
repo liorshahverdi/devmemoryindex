@@ -23,14 +23,18 @@
 | `core/tests/test_hybrid_search.py` | **Done** | 5 tests — keyword surfacing, deduplication, hybrid-vs-semantic, importance ranking, k limit. All passing. |
 | `core/tests/try_queries.py` | **Broken** | Still uses removed legacy functions (`save_memory`, `search_memory`). Needs migration to `MemoryStore`. |
 | `cli/main.py` — Typer entrypoint | **Done** | Registers `search`, `add`, `stats` commands. `devmemory` CLI works. |
-| `cli/commands/search.py` | **Done** | Working, but still calls `semantic_search()` — needs upgrade to `hybrid_search()`. |
+| `cli/commands/search.py` | **Done** | Upgraded to `hybrid_search()`. Supports `--type` and `--repo` filters. |
 | `cli/commands/add.py` | **Done** | Manual memory insertion via CLI. |
 | `cli/commands/stats.py` | **Done** | Shows total count and type breakdown (uses `to_arrow()` instead of `to_pandas()`). |
+| `core/context_engine.py` — ContextEngine class | **Done** | `build()` — hybrid search → repo filter → dedup → token packing → format ("raw"/"claude"/"markdown"). `DEFAULT_TOKEN_BUDGET = 4000`. |
+| `core/token_budget.py` — Token estimation | **Done** | `estimate_tokens()`, `pack_within_budget()` — enforces max_tokens and max_items limits. |
 | `pyproject.toml` | **Done** | `[project.scripts]` registered, hatchling build, dev deps configured. |
 | Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/` directories created |
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
 
-**What's empty:** `connectors/`, `api/`, `daemon/` — all currently have no files.
+**What's empty:** `connectors/`, `api/`, `daemon/` — all currently have no implementation files.
+
+**What's next:** Phase 1.7 (`store.exists()` for deduplication), tests for `ContextEngine`, then Phase 2 (connectors).
 
 ---
 
@@ -66,6 +70,7 @@ devmemoryindex/
 │   ├── filtering.py           # Repo/type/tag/recency filters
 │   ├── context_engine.py      # Build AI-ready context blocks
 │   ├── token_budget.py        # Enforce LLM token limits
+│   ├── privacy.py             # Regex-based redaction (API keys, tokens, PII)
 │   └── formatter.py           # Output formatting (raw/claude/chatgpt)
 │
 ├── connectors/
@@ -76,24 +81,33 @@ devmemoryindex/
 │   ├── filesystem_connector.py# Code files (.py, .ts, .md, .json)
 │   ├── markdown_connector.py  # Notes/Obsidian/knowledge dirs
 │   ├── claude_connector.py    # Claude Code conversation logs
-│   └── copilot_connector.py   # VSCode Copilot chat (best-effort)
+│   ├── copilot_connector.py   # VSCode Copilot chat (best-effort)
+│   ├── voice_connector.py     # Microphone recordings via Whisper STT
+│   └── browser_connector.py   # Chrome/Firefox bookmarks
 │
 ├── cli/
 │   ├── main.py                # Typer entrypoint
 │   └── commands/
-│       ├── search.py          # devmemory search "query"
+│       ├── search.py          # devmemory search "query" [--voice]
 │       ├── ingest.py          # devmemory ingest [--source git|terminal|all]
 │       ├── context.py         # devmemory context "query" [--json] [--copy] [--repo]
 │       ├── add.py             # devmemory add (manual memory)
 │       ├── stats.py           # devmemory stats
-│       └── daemon_cmd.py      # devmemory daemon start
+│       ├── dictate.py         # devmemory dictate (speak → auto-index)
+│       ├── daemon_cmd.py      # devmemory daemon start
+│       ├── tag.py             # devmemory tag add/remove/list
+│       ├── pin.py             # devmemory pin / unpin
+│       ├── export.py          # devmemory export / import
+│       ├── audit.py           # devmemory audit (duplicates, orphans)
+│       └── repl.py            # devmemory repl (interactive prompt loop)
 │
 ├── api/
 │   ├── server.py              # FastAPI app
 │   └── routes/
 │       ├── search.py          # POST /search
 │       ├── memory.py          # POST /remember
-│       └── context.py         # POST /context
+│       ├── context.py         # POST /context
+│       └── webhook.py         # POST /ingest (CI/CD push)
 │
 ├── daemon/
 │   ├── scheduler.py           # Periodic connector execution
@@ -153,7 +167,7 @@ All 6 files created and working:
 
 `pyproject.toml` has `[project.scripts] devmemory = "cli.main:app"` registered.
 
-**Remaining:** Upgrade `search.py` to call `hybrid_search()` now that Phase 1.5 is complete.
+**Upgrade complete:** `search.py` now calls `hybrid_search()` with `--type` and `--repo` filter support.
 
 <details>
 <summary>Original implementation spec (preserved for reference)</summary>
@@ -354,7 +368,7 @@ devmemory stats                           # shows 1 memory
 
 </details>
 
-**Upgrade path:** Phase 1.5 (hybrid search) is now complete. Update `cli/commands/search.py` to call `store.hybrid_search(query, vector, k=...)` instead of `store.semantic_search(vector, k=...)`.
+**Upgrade complete:** `cli/commands/search.py` now calls `store.hybrid_search(query, vector, k=...)` with CLI-level `--type` and `--repo` filtering.
 
 ---
 
@@ -447,8 +461,9 @@ def hybrid_search(self, query: str, vector: list, k: int = 5) -> list:
 </details>
 
 ---
+### 1.6 Implement Context Engine ✅
 
-### 1.6 Implement Context Engine
+**Status: COMPLETED**
 
 **File:** `core/context_engine.py`
 
@@ -457,6 +472,7 @@ This is the bridge between DevMemoryIndex and AI agents. It converts ranked memo
 ```python
 from core.memory_store import MemoryStore
 from core.embeddings import embed
+from core.token_budget import estimate_tokens, pack_within_budget
 
 class ContextEngine:
 
@@ -485,17 +501,10 @@ class ContextEngine:
         # 3. Deduplicate near-identical summaries
         candidates = self._deduplicate(candidates)
 
-        # 4. Pack within token budget
-        selected = []
-        token_count = 0
-        for mem in candidates:
-            est_tokens = len(mem["summary"].split()) + 20  # overhead
-            if token_count + est_tokens > max_tokens:
-                break
-            selected.append(mem)
-            token_count += est_tokens
-            if len(selected) >= max_memories:
-                break
+        # 4. Pack within token budget (uses core.token_budget)
+        selected, token_count = pack_within_budget(
+            candidates, max_tokens=max_tokens, max_items=max_memories
+        )
 
         # 5. Format output
         context_text = self._format(selected, format)
@@ -542,24 +551,58 @@ class ContextEngine:
         return "\n\n".join(m["summary"] for m in memories)
 ```
 
-**File:** `core/token_budget.py` (helper, used above inline but extractable later)
+**File:** `core/token_budget.py` — token estimation and budget packing, imported by `ContextEngine.build()`, `cli/commands/context.py`, and `api/routes/context.py`.
 
 ```python
+METADATA_OVERHEAD = 20  # tokens for type/repo/importance labels per memory
+
 def estimate_tokens(text: str) -> int:
-    return len(text.split())  # rough ~1 token per word estimate
+    """Rough token estimate (~1 token per whitespace-delimited word)."""
+    return len(text.split())
+
+def pack_within_budget(
+    memories: list[dict],
+    max_tokens: int = 4000,
+    max_items: int = 10,
+    text_key: str = "summary",
+) -> tuple[list[dict], int]:
+    """Select memories that fit within a token budget.
+
+    Returns (selected_memories, total_token_count).
+    """
+    selected = []
+    token_count = 0
+    for mem in memories:
+        est = estimate_tokens(mem.get(text_key, "")) + METADATA_OVERHEAD
+        if token_count + est > max_tokens:
+            break
+        selected.append(mem)
+        token_count += est
+        if len(selected) >= max_items:
+            break
+    return selected, token_count
 ```
 
-**Tests:** Create `core/tests/test_context_engine.py`:
-- Build context for a known query — verify output contains expected memories.
-- Test token budget is respected (insert 50 memories, set max_tokens=200, verify truncation).
-- Test repo filter — only memories from specified repo appear.
-- Test each format mode ("raw", "claude", "markdown") produces valid output.
+**Used by:**
+- `core/context_engine.py` — `pack_within_budget()` in `build()` to select memories that fit the token limit.
+- `cli/commands/context.py` — `estimate_tokens()` available for displaying accurate estimates in `--json` output.
+- `api/routes/context.py` — same pipeline via `ContextEngine`.
 
-**Done when:** `ContextEngine.build("redis timeout")` returns a structured dict with formatted context text, token estimate, and list of selected memories.
+**Implementation summary:**
+- `core/context_engine.py` — `ContextEngine.build()` implemented: hybrid search → repo filter → `_deduplicate()` (prefix key on first 100 chars) → `pack_within_budget()` → `_format()`. Returns dict with `query`, `memories`, `context_text`, `token_estimate`, `memory_count`.
+- `core/token_budget.py` — `estimate_tokens()` (word count) and `pack_within_budget()` implemented. `METADATA_OVERHEAD = 20` tokens per memory.
+
+**Remaining:** `core/tests/test_context_engine.py` not yet written. Tests needed:
+- Build context for a known query — verify output contains expected memories.
+- Token budget respected (insert 50 memories, set max_tokens=200, verify truncation).
+- Repo filter — only memories from specified repo appear.
+- Each format mode ("raw", "claude", "markdown") produces valid output.
 
 ---
 
 ### 1.7 Content Hashing for Incremental Indexing
+
+**Status: PENDING** — `store.exists()` not yet implemented. Required before Phase 2 connectors can deduplicate.
 
 **Why:** Without this, re-running connectors re-embeds everything, which is slow and creates duplicates.
 
@@ -580,8 +623,62 @@ def exists(self, memory_id: str) -> bool:
 
 ---
 
+### 1.8 Privacy / Redaction Filter
+
+**Status: PENDING** — Depends on Phase 1.7.
+
+**Why:** Connectors ingest raw text from history files, code, and notes. Without redaction, secrets (API keys, tokens, passwords) and PII can be stored in plaintext inside LanceDB.
+
+**File:** `core/privacy.py`
+
+```python
+import re
+
+# Patterns that must never be stored in raw_text
+_BLOCKLIST = [
+    re.compile(r'(?i)(api[_-]?key|token|password|secret|passwd)\s*[:=]\s*\S+'),
+    re.compile(r'(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*'),
+    re.compile(r'[A-Za-z0-9+/]{40,}={0,2}'),          # long base64 blobs (JWT, keys)
+    re.compile(r'\b\d{3}-\d{2}-\d{4}\b'),              # US SSN
+    re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),  # email
+]
+
+_REDACT_PLACEHOLDER = "[REDACTED]"
+
+def redact(text: str) -> str:
+    """Replace sensitive patterns with [REDACTED]. Returns cleaned text."""
+    for pattern in _BLOCKLIST:
+        text = pattern.sub(_REDACT_PLACEHOLDER, text)
+    return text
+```
+
+**Hook into connector base class** (`connectors/base.py`): call `redact(raw_text)` on the `Memory.raw_text` field before passing to `store.add()`:
+
+```python
+from core.privacy import redact
+
+# Inside Connector.collect() — wrap raw_text before creating Memory:
+memory = Memory(
+    ...
+    raw_text=redact(raw_text),
+    ...
+)
+```
+
+**Tests:** `core/tests/test_privacy.py`
+- Verify API key patterns are replaced with `[REDACTED]`.
+- Verify bearer tokens are stripped.
+- Verify clean text is returned unchanged.
+- Verify the redaction is applied end-to-end when a connector stores a memory.
+
+**Done when:** A history file containing `export API_KEY=abc123` produces a memory with `[REDACTED]` instead of the key value.
+
+---
+
 ## Phase 2 — Connectors (Memory Ingestion)
 
+> **Status: NOT STARTED** — `connectors/` directory is empty. Blocked on Phase 1.7 (`store.exists()`).
+>
 > **Goal:** DevMemoryIndex automatically captures developer knowledge from
 > six sources. Each connector inherits from a base class, creates Memory objects,
 > embeds them, and saves them through MemoryStore.
@@ -622,6 +719,8 @@ from connectors.filesystem_connector import FilesystemConnector
 from connectors.markdown_connector import MarkdownConnector
 from connectors.claude_connector import ClaudeConnector
 from connectors.copilot_connector import CopilotConnector
+from connectors.voice_connector import VoiceConnector
+from connectors.browser_connector import BrowserConnector
 
 ALL_CONNECTORS = [
     GitConnector,
@@ -630,6 +729,8 @@ ALL_CONNECTORS = [
     MarkdownConnector,
     ClaudeConnector,
     CopilotConnector,
+    VoiceConnector,
+    BrowserConnector,
 ]
 
 def get_connectors(names: list[str] | None = None) -> list:
@@ -1252,8 +1353,234 @@ class CopilotConnector(Connector):
 
 ---
 
+### 2.9 Voice Connector
+
+**File:** `connectors/voice_connector.py`
+
+**Purpose:** Record microphone audio, transcribe with local Whisper, and store the result as a `voice_note` memory. Called by the daemon on a schedule or manually via `devmemory dictate`.
+
+**Dependencies:** `openai-whisper` (or `faster-whisper`), `sounddevice`, `scipy`
+
+```bash
+uv add openai-whisper sounddevice scipy
+```
+
+```python
+import hashlib
+import tempfile
+import sounddevice as sd
+import scipy.io.wavfile as wav
+import whisper
+from datetime import datetime
+from core.schema import Memory
+from core.embeddings import embed
+from connectors.base import Connector
+
+class VoiceConnector(Connector):
+    name = "voice"
+
+    def __init__(
+        self,
+        duration: int = 10,
+        model_size: str = "base",  # "base" | "small" | "medium"
+        repo: str | None = None,
+    ):
+        super().__init__()
+        self.duration = duration
+        self.model_size = model_size
+        self.repo = repo
+        self._model = None  # lazy-loaded
+
+    def _get_model(self):
+        if self._model is None:
+            self._model = whisper.load_model(self.model_size)
+        return self._model
+
+    def collect(self) -> int:
+        """Record audio, transcribe, and store as a memory. Returns 1 on success."""
+        sample_rate = 16000
+        audio = sd.rec(
+            self.duration * sample_rate,
+            samplerate=sample_rate,
+            channels=1,
+            dtype="int16",
+        )
+        sd.wait()
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav.write(f.name, sample_rate, audio)
+            result = self._get_model().transcribe(f.name)
+
+        text = result["text"].strip()
+        if not text:
+            return 0
+
+        mem_id = hashlib.sha256((text + "voice").encode()).hexdigest()
+
+        if self.store.exists(mem_id):
+            return 0
+
+        memory = Memory(
+            id=mem_id,
+            type="voice_note",
+            summary=text[:200],
+            raw_text=text,
+            source="voice",
+            repo=self.repo,
+            timestamp=datetime.utcnow(),
+            tags=["voice"],
+            importance=0.8,
+        )
+
+        self.store.add(memory, embed(memory.summary))
+        return 1
+```
+
+**Model tradeoffs:**
+
+| Model | Size | Notes |
+|---|---|---|
+| `base` | 74 MB | Fast, good for clear speech |
+| `small` | 244 MB | Better for technical terms (library names, CLI flags) |
+| `faster-whisper/base` | ~same | Drop-in replacement, ~4× faster, lower memory |
+
+Use `small` for developer dictation — technical vocabulary benefits from the larger model.
+
+**Tests:** `connectors/tests/test_voice_connector.py`
+- Mock `sd.rec` and `whisper.load_model` to return a known transcript.
+- Verify memory is created with `type="voice_note"`, correct summary, and `source="voice"`.
+- Verify `store.exists()` prevents duplicate indexing of identical transcripts.
+
+**Done when:** `devmemory dictate` records, transcribes, and indexes speech. `devmemory search "redis timeout"` finds a memory that was spoken, not typed.
+
+---
+
+### 2.10 Browser Bookmarks Connector
+
+**File:** `connectors/browser_connector.py`
+
+**Purpose:** Index browser bookmarks (title + URL) so saved research pages are searchable alongside code and notes.
+
+**Supported browsers:**
+- **Chrome / Chromium** — reads `~/Library/Application Support/Google/Chrome/Default/Bookmarks` (JSON format)
+- **Firefox** — reads `~/Library/Application Support/Firefox/Profiles/*/places.sqlite` (SQLite, `moz_bookmarks` + `moz_places`)
+
+```python
+import hashlib
+import json
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from core.schema import Memory
+from core.embeddings import embed
+from connectors.base import Connector
+
+class BrowserConnector(Connector):
+    name = "browser"
+
+    CHROME_PATH = (
+        Path.home() / "Library" / "Application Support"
+        / "Google" / "Chrome" / "Default" / "Bookmarks"
+    )
+    FIREFOX_PROFILE_DIR = (
+        Path.home() / "Library" / "Application Support" / "Firefox" / "Profiles"
+    )
+
+    def collect(self) -> int:
+        count = 0
+        count += self._collect_chrome()
+        count += self._collect_firefox()
+        return count
+
+    # ── Chrome ────────────────────────────────────────────────────────────────
+
+    def _collect_chrome(self) -> int:
+        if not self.CHROME_PATH.exists():
+            return 0
+        try:
+            data = json.loads(self.CHROME_PATH.read_text(errors="ignore"))
+        except Exception:
+            return 0
+        count = 0
+        for node in self._walk_chrome(data.get("roots", {})):
+            count += self._store_bookmark(node["name"], node["url"], "chrome")
+        return count
+
+    def _walk_chrome(self, node):
+        """Recursively yield bookmark leaf nodes from Chrome JSON."""
+        if isinstance(node, dict):
+            if node.get("type") == "url":
+                yield node
+            for child in node.get("children", []):
+                yield from self._walk_chrome(child)
+            for value in node.values():
+                if isinstance(value, dict):
+                    yield from self._walk_chrome(value)
+
+    # ── Firefox ───────────────────────────────────────────────────────────────
+
+    def _collect_firefox(self) -> int:
+        if not self.FIREFOX_PROFILE_DIR.exists():
+            return 0
+        count = 0
+        for db_path in self.FIREFOX_PROFILE_DIR.glob("*/places.sqlite"):
+            count += self._read_firefox_db(db_path)
+        return count
+
+    def _read_firefox_db(self, db_path: Path) -> int:
+        count = 0
+        try:
+            con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            rows = con.execute(
+                "SELECT p.title, p.url FROM moz_bookmarks b "
+                "JOIN moz_places p ON b.fk = p.id "
+                "WHERE p.url NOT LIKE 'place:%'"
+            ).fetchall()
+            con.close()
+        except Exception:
+            return 0
+        for title, url in rows:
+            count += self._store_bookmark(title or url, url, "firefox")
+        return count
+
+    # ── Shared ────────────────────────────────────────────────────────────────
+
+    def _store_bookmark(self, title: str, url: str, source: str) -> int:
+        if not url or not url.startswith("http"):
+            return 0
+        raw = f"{title}\n{url}"
+        mem_id = hashlib.sha256(raw.encode()).hexdigest()
+        if self.store.exists(mem_id):
+            return 0
+        memory = Memory(
+            id=mem_id,
+            type="bookmark",
+            summary=f"{title}: {url}"[:200],
+            raw_text=raw,
+            source=source,
+            repo=None,
+            timestamp=datetime.utcnow(),
+            tags=["bookmark", source],
+            importance=0.6,
+        )
+        self.store.add(memory, embed(memory.summary))
+        return 1
+```
+
+**Tests:** `connectors/tests/test_browser_connector.py`
+- Provide a sample Chrome Bookmarks JSON file in a temp dir and verify leaf nodes are stored as `type="bookmark"`.
+- Provide a minimal Firefox `places.sqlite` with one row and verify it is indexed.
+- Verify `importance = 0.6` on all stored memories.
+- Verify deduplication: running the connector twice inserts zero new entries the second time.
+
+**Done when:** `devmemory ingest --source browser` indexes your Chrome and Firefox bookmarks. `devmemory search "rust async"` surfaces a saved MDN or blog page.
+
+---
+
 ## Phase 3 — CLI (Human Interface)
 
+> **Status: PARTIALLY DONE** — `search`, `add`, `stats` complete. `context` command unblocked (Phase 1.6 done). `ingest` blocked on Phase 2. `daemon` blocked on Phase 5.
+>
 > **Goal:** A developer can operate DevMemoryIndex entirely from the terminal,
 > like using `git` — no Python scripts needed.
 >
@@ -1262,11 +1589,19 @@ class CopilotConnector(Connector):
 > | Command | Earliest Phase | Why |
 > |---|---|---|
 > | `devmemory search` | Phase 1 | Only needs `MemoryStore` + `embed()` |
+> | `devmemory search --voice` | Phase 2.9 | Needs `VoiceConnector` transcription |
 > | `devmemory add` | Phase 1 | Only needs `MemoryStore` + `embed()` |
 > | `devmemory stats` | Phase 1 | Only needs `MemoryStore` |
 > | `devmemory context` | Phase 1 (after 1.6) | Needs `ContextEngine` |
 > | `devmemory ingest` | Phase 2 | Needs connectors |
+> | `devmemory dictate` | Phase 2.9 | Needs `VoiceConnector` |
 > | `devmemory daemon` | Phase 5 | Needs `daemon/scheduler.py` |
+> | `devmemory tag` | Phase 1 | Needs `MemoryStore` + schema `tags` field |
+> | `devmemory pin` | Phase 1 | Needs schema `pinned` field |
+> | `devmemory export` | Phase 1 | Needs `store.get_all()` |
+> | `devmemory import` | Phase 1 | Needs `store.add()` |
+> | `devmemory audit` | Phase 1.5 | Needs hybrid search for near-duplicate detection |
+> | `devmemory repl` | Phase 1 | Needs `MemoryStore` + `embed()` |
 >
 > The entrypoint (`cli/main.py`) and first three commands are scaffolded in
 > **Phase 1.3**. The remaining commands are added here as their dependencies
@@ -1434,8 +1769,361 @@ def daemon(
 
 ---
 
+#### 3.2d Dictate Command (Requires Phase 2.9 — Voice Connector)
+
+**File:** `cli/commands/dictate.py`
+
+Records microphone audio, transcribes it with Whisper, and stores the result as a `voice_note` memory.
+
+```python
+import typer
+from rich.console import Console
+from connectors.voice_connector import VoiceConnector
+
+console = Console()
+
+def dictate(
+    duration: int = typer.Option(10, "--duration", "-d", help="Recording length in seconds"),
+    model: str = typer.Option("base", "--model", "-m", help="Whisper model: base, small, medium"),
+    repo: str | None = typer.Option(None, "--repo", "-r", help="Associate with a repo"),
+    importance: float = typer.Option(0.8, "--importance", "-i"),
+):
+    """Record your voice and auto-index it as a memory."""
+    console.print(f"[cyan]Recording for {duration}s... (speak now)[/cyan]")
+    connector = VoiceConnector(duration=duration, model_size=model, repo=repo)
+    count = connector.collect()
+    if count:
+        console.print("[bold green]Memory indexed.[/bold green]")
+    else:
+        console.print("[yellow]Nothing transcribed or already indexed.[/yellow]")
+```
+
+Register in `cli/main.py` after Phase 2.9:
+```python
+from cli.commands.dictate import dictate
+app.command()(dictate)
+```
+
+Usage:
+```bash
+devmemory dictate                          # 10s clip, base model
+devmemory dictate --duration 30 --model small --repo myapp
+```
+
+**Done when:** Speaking `devmemory dictate` records audio, prints "Memory indexed.", and the transcript is retrievable via `devmemory search`.
+
+---
+
+#### 3.2e Voice Search Flag (Requires Phase 2.9 — Voice Connector)
+
+Adds `--voice` to the existing `devmemory search` command. When set, records a short clip, transcribes it, and passes the text into the normal `hybrid_search()` pipeline — no other changes.
+
+**Edit `cli/commands/search.py`** — add one option and a transcription block at the top of `search()`:
+
+```python
+# Add to the function signature:
+voice: bool = typer.Option(False, "--voice", "-v", help="Speak your search query"),
+
+# Add at the top of the function body, before embed():
+if voice:
+    import sounddevice as sd, scipy.io.wavfile as wav, tempfile, whisper
+    console.print("[cyan]Listening for query (5s)...[/cyan]")
+    sr = 16000
+    audio = sd.rec(5 * sr, samplerate=sr, channels=1, dtype="int16")
+    sd.wait()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        wav.write(f.name, sr, audio)
+        query = whisper.load_model("base").transcribe(f.name)["text"].strip()
+    console.print(f"[green]Query:[/green] {query}")
+```
+
+Usage:
+```bash
+devmemory search --voice         # speak your query → hybrid_search()
+```
+
+**Done when:** `devmemory search --voice` transcribes spoken input and returns the same ranked results as a typed query.
+
+---
+
+#### 3.2f Tag Management (Requires Phase 1)
+
+**File:** `cli/commands/tag.py`
+
+Sub-commands via a Typer group:
+
+```python
+import typer
+from rich.console import Console
+from core.store_provider import get_store
+
+app = typer.Typer(help="Manage tags on memories.")
+console = Console()
+
+@app.command("add")
+def tag_add(memory_id: str = typer.Argument(...), tag: str = typer.Argument(...)):
+    """Add a tag to a memory."""
+    store = get_store()
+    store.add_tag(memory_id, tag)
+    console.print(f"[green]Tag '{tag}' added to {memory_id[:8]}[/green]")
+
+@app.command("remove")
+def tag_remove(memory_id: str = typer.Argument(...), tag: str = typer.Argument(...)):
+    """Remove a tag from a memory."""
+    store = get_store()
+    store.remove_tag(memory_id, tag)
+    console.print(f"[yellow]Tag '{tag}' removed from {memory_id[:8]}[/yellow]")
+
+@app.command("list")
+def tag_list(memory_id: str = typer.Argument(...)):
+    """List all tags on a memory."""
+    store = get_store()
+    tags = store.get_tags(memory_id)
+    console.print(f"Tags: {', '.join(tags) if tags else '(none)'}")
+```
+
+Also add `--tag` filter to `cli/commands/search.py`:
+
+```python
+tag: str | None = typer.Option(None, "--tag", help="Filter by tag"),
+
+# In search body, after existing filters:
+if tag:
+    results = [r for r in results if tag in (r.get("tags") or [])]
+```
+
+Register in `cli/main.py`:
+```python
+from cli.commands.tag import app as tag_app
+app.add_typer(tag_app, name="tag")
+```
+
+**Done when:** `devmemory tag add <id> important` adds the tag. `devmemory search "redis" --tag important` filters results.
+
+---
+
+#### 3.2g Pin / Unpin (Requires Phase 1 — schema change)
+
+**Schema change** (`core/schema.py`): add `pinned: bool = False` to the `Memory` dataclass and the LanceDB Arrow schema.
+
+**File:** `cli/commands/pin.py`
+
+```python
+import typer
+from rich.console import Console
+from core.store_provider import get_store
+
+console = Console()
+
+def pin(memory_id: str = typer.Argument(..., help="Memory ID to pin")):
+    """Pin a memory so it is never decayed."""
+    store = get_store()
+    store.set_pinned(memory_id, True)
+    console.print(f"[green]Pinned {memory_id[:8]}[/green]")
+
+def unpin(memory_id: str = typer.Argument(..., help="Memory ID to unpin")):
+    """Unpin a memory (resume importance decay)."""
+    store = get_store()
+    store.set_pinned(memory_id, False)
+    console.print(f"[yellow]Unpinned {memory_id[:8]}[/yellow]")
+```
+
+Register in `cli/main.py`:
+```python
+from cli.commands.pin import pin, unpin
+app.command()(pin)
+app.command()(unpin)
+```
+
+**Done when:** `devmemory pin <id>` marks the memory. Pinned memories are excluded from the importance decay job (see Phase 5.3).
+
+---
+
+#### 3.2h Export / Import (Requires Phase 1)
+
+**File:** `cli/commands/export.py`
+
+```python
+import json
+import typer
+from pathlib import Path
+from datetime import datetime
+from rich.console import Console
+from core.store_provider import get_store
+from core.schema import Memory
+from core.embeddings import embed
+
+console = Console()
+
+def export(
+    output: Path = typer.Argument(..., help="Output JSON file path"),
+):
+    """Export all memories to a JSON file."""
+    store = get_store()
+    records = store.get_all()
+    data = [dict(r) for r in records]
+    output.write_text(json.dumps(data, indent=2, default=str))
+    console.print(f"[green]Exported {len(data)} memories → {output}[/green]")
+
+def import_memories(
+    input_file: Path = typer.Argument(..., help="JSON file to import"),
+):
+    """Import memories from a JSON file (skips duplicates)."""
+    store = get_store()
+    data = json.loads(input_file.read_text())
+    added = 0
+    for record in data:
+        mem_id = record.get("id", "")
+        if store.exists(mem_id):
+            continue
+        memory = Memory(
+            id=mem_id,
+            type=record.get("type", "agent_solution"),
+            summary=record.get("summary", "")[:200],
+            raw_text=record.get("raw_text", ""),
+            source=record.get("source", "import"),
+            repo=record.get("repo"),
+            timestamp=datetime.fromisoformat(record["timestamp"]) if record.get("timestamp") else datetime.utcnow(),
+            tags=record.get("tags", []),
+            importance=record.get("importance", 0.5),
+        )
+        vector = embed(memory.summary)
+        store.add(memory, vector)
+        added += 1
+    console.print(f"[green]Imported {added} new memories.[/green]")
+```
+
+Register in `cli/main.py`:
+```python
+from cli.commands.export import export, import_memories
+app.command(name="export")(export)
+app.command(name="import")(import_memories)
+```
+
+**Done when:** `devmemory export memories.json` dumps all memories. `devmemory import memories.json` re-imports them on a fresh install without duplicates.
+
+---
+
+#### 3.2i Audit (Requires Phase 1.5 — Hybrid Search)
+
+**File:** `cli/commands/audit.py`
+
+Surfaces memory quality issues: near-duplicates, orphaned sources, never-retrieved memories, and very short entries.
+
+```python
+import typer
+from rich.console import Console
+from rich.table import Table
+from core.store_provider import get_store
+
+console = Console()
+
+def audit():
+    """Audit memory store for quality issues."""
+    store = get_store()
+    all_memories = store.get_all()
+
+    issues = []
+
+    # Very short entries (< 20 chars summary)
+    short = [m for m in all_memories if len(m.get("summary", "")) < 20]
+    for m in short:
+        issues.append((m["id"][:8], "short", m.get("summary", "")))
+
+    # Near-duplicates: check for memories with identical first 80 chars of summary
+    seen_prefixes = {}
+    for m in all_memories:
+        prefix = m.get("summary", "")[:80].lower().strip()
+        if prefix in seen_prefixes:
+            issues.append((m["id"][:8], "near-duplicate", m.get("summary", "")[:60]))
+        else:
+            seen_prefixes[prefix] = m["id"]
+
+    if not issues:
+        console.print("[green]No issues found. Memory store looks healthy.[/green]")
+        return
+
+    table = Table(title="Audit Issues")
+    table.add_column("ID", style="cyan", width=10)
+    table.add_column("Issue", style="yellow", width=16)
+    table.add_column("Preview", style="white")
+    for mem_id, issue, preview in issues:
+        table.add_row(mem_id, issue, preview)
+    console.print(table)
+```
+
+Register in `cli/main.py`:
+```python
+from cli.commands.audit import audit
+app.command()(audit)
+```
+
+**Done when:** `devmemory audit` surfaces duplicate and low-quality memories with actionable IDs.
+
+---
+
+#### 3.2j REPL (Requires Phase 1)
+
+**File:** `cli/commands/repl.py`
+
+A persistent interactive prompt that keeps the embedding model and store loaded between queries — avoids the cold-start latency of repeated `devmemory search` invocations.
+
+```python
+import typer
+from rich.console import Console
+from core.store_provider import get_store
+from core.embeddings import embed
+
+console = Console()
+
+def repl():
+    """Start an interactive memory search session (model stays loaded)."""
+    store = get_store()
+    console.print("[bold cyan]DevMemory REPL[/bold cyan] — type a query, or 'exit' to quit.\n")
+
+    while True:
+        try:
+            query = input("devmemory> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[yellow]Exiting REPL.[/yellow]")
+            break
+
+        if not query:
+            continue
+        if query.lower() in {"exit", "quit", "q"}:
+            console.print("[yellow]Goodbye.[/yellow]")
+            break
+
+        vector = embed(query)
+        results = store.hybrid_search(query, vector, k=5)
+
+        if not results:
+            console.print("[yellow]No results.[/yellow]\n")
+            continue
+
+        for i, r in enumerate(results, 1):
+            console.print(
+                f"[cyan]{i}.[/cyan] [{r.get('type', '')}] "
+                f"{r.get('summary', '')[:100]}  "
+                f"[dim](importance: {r.get('importance', 0.5):.1f})[/dim]"
+            )
+        console.print()
+```
+
+Register in `cli/main.py`:
+```python
+from cli.commands.repl import repl
+app.command()(repl)
+```
+
+**Done when:** `devmemory repl` starts an interactive session. Queries return results without reloading the model each time.
+
+---
+
 ## Phase 4 — API (Agent Interface)
 
+> **Status: NOT STARTED** — `api/` directory is empty.
+>
 > **Goal:** AI agents (Claude Code, local LLMs, custom scripts) can query
 > DevMemoryIndex over HTTP to get persistent developer memory.
 
@@ -1620,6 +2308,78 @@ curl -X POST "http://localhost:7711/memory/remember" \
 
 ---
 
+### 4.5 Webhook Route (Push Ingest)
+
+**File:** `api/routes/webhook.py`
+
+**Purpose:** Let CI/CD pipelines, deploy scripts, and monitoring tools push memories into DevMemoryIndex in real-time — no polling, no connector schedule required.
+
+```python
+import hashlib
+from datetime import datetime
+from fastapi import APIRouter
+from pydantic import BaseModel
+from core.store_provider import get_store
+from core.schema import Memory
+from core.embeddings import embed
+
+router = APIRouter()
+
+class WebhookPayload(BaseModel):
+    text: str
+    source: str = "webhook"
+    type: str = "agent_solution"
+    repo: str | None = None
+    importance: float = 0.8
+    tags: list[str] = []
+
+@router.post("/ingest")
+def webhook_ingest(payload: WebhookPayload):
+    """Accept a pushed memory from an external process (CI/CD, deploy scripts, monitors)."""
+    store = get_store()
+    mem_id = hashlib.sha256((payload.text + payload.source).encode()).hexdigest()
+
+    if store.exists(mem_id):
+        return {"status": "duplicate", "id": mem_id}
+
+    memory = Memory(
+        id=mem_id,
+        type=payload.type,
+        summary=payload.text[:200],
+        raw_text=payload.text,
+        source=payload.source,
+        repo=payload.repo,
+        timestamp=datetime.utcnow(),
+        tags=payload.tags or ["webhook"],
+        importance=payload.importance,
+    )
+    store.add(memory, embed(memory.summary))
+    return {"status": "ok", "id": mem_id}
+```
+
+Register in `api/server.py`:
+```python
+from api.routes.webhook import router as webhook_router
+app.include_router(webhook_router, prefix="/memory", tags=["webhook"])
+```
+
+**Usage examples:**
+```bash
+# From a deploy script — push a deployment event as a memory
+curl -X POST "http://localhost:7711/memory/ingest" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Deployed v2.3 to production (k8s rollout)", "source": "deploy-script", "type": "git_commit", "repo": "api"}'
+
+# From a monitoring alert
+curl -X POST "http://localhost:7711/memory/ingest" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "OOM kill on worker-pod-3 at 03:14 UTC", "source": "alertmanager", "type": "terminal_command"}'
+```
+
+**Done when:** `POST /memory/ingest` accepts a JSON body, creates a Memory, indexes it immediately, and returns `{"status": "ok", "id": "..."}`. Duplicate payloads return `{"status": "duplicate"}`.
+
+---
+
 ## Phase 5 — Daemon (Automation)
 
 > **Goal:** Memories appear automatically without running manual commands.
@@ -1694,18 +2454,20 @@ def start_watcher(path: str = "."):
 from core.store_provider import get_store
 
 def decay_importance(factor: float = 0.99):
-    """Reduce importance of all memories slightly. Run daily."""
+    """Reduce importance of non-pinned memories slightly. Run daily."""
     store = get_store()
     try:
         df = store.collection.to_pandas()
-        df["importance"] = df["importance"] * factor
+        # Skip pinned memories — their importance must never decay
+        mask = df.get("pinned", False) != True
+        df.loc[mask, "importance"] = df.loc[mask, "importance"] * factor
         # Rewrite (LanceDB overwrite pattern)
         store.collection.merge_insert(df)
     except Exception:
         pass  # Non-critical job
 ```
 
-**Done when:** `devmemory daemon` runs continuously, automatically ingests new data, and memories decay in importance over time.
+**Done when:** `devmemory daemon` runs continuously, automatically ingests new data, memories decay in importance over time, and pinned memories are unaffected by decay.
 
 ---
 
@@ -1805,9 +2567,20 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | **Now** | — | **Cleanup: upgrade search.py to hybrid, fix test_memory_store, delete try_queries** | Phase 1.5 | |
 | **Now** | 1.6–1.7 | Context engine, content hashing | Phase 1.4–1.5 | |
 | **Now** | 3.2b | **CLI `context` command** | Phase 1.6 | |
+| **Next** | 1.8 | **Privacy / Redaction Filter** (`core/privacy.py`, hook into base connector) | Phase 1.7 | |
 | **Next** | 2 | Connectors (git, terminal, filesystem, markdown, claude, copilot) | Phase 1.7 | |
+| **Next** | 2.9 | **Voice Connector** (`VoiceConnector` + Whisper STT) | Phase 2 | |
+| **Next** | 2.10 | **Browser Bookmarks Connector** (Chrome JSON + Firefox SQLite) | Phase 2 | |
 | **Next** | 3.2a | **CLI `ingest` command** | Phase 2 | |
+| **Next** | 3.2d | **CLI `dictate` command** | Phase 2.9 | |
+| **Next** | 3.2e | **`search --voice` flag** | Phase 2.9 | |
+| **Next** | 3.2f | **CLI `tag` command** (`add`, `remove`, `list`; `--tag` search filter) | Phase 1 | |
+| **Next** | 3.2g | **CLI `pin` / `unpin` commands** (schema `pinned` field) | Phase 1 | |
+| **Next** | 3.2h | **CLI `export` / `import` commands** | Phase 1 | |
+| **Next** | 3.2i | **CLI `audit` command** | Phase 1.5 | |
+| **Next** | 3.2j | **CLI `repl` command** | Phase 1 | |
 | **Next** | 4 | API (search, remember, context endpoints) | Phase 1.6 | |
+| **Next** | 4.5 | **Webhook `POST /ingest`** (CI/CD push ingest) | Phase 4 | |
 | **Next** | 5 | Daemon (scheduler, watcher, decay) | Phase 2 | |
 | **Next** | 5+3.2c | **CLI `daemon` command** | Phase 5 | |
 | **Later** | 6 | Intelligence (reinforcement, dedup, compression, auto-context) | Phases 1–5 | |
@@ -1825,6 +2598,15 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | Hybrid search | Integration test: insert diverse memories, verify keyword+semantic mix | ✅ 5 passing |
 | Context engine | Integration test: verify token budget, dedup, format output | Not started |
 | Each connector | Unit test with mock data (temp repos, fake history files, mock JSON) | Not started |
+| Voice connector | Unit test with mocked `sd.rec` and `whisper.load_model` returning known transcript | Not started |
+| Privacy filter | Unit test: API key / bearer token patterns → `[REDACTED]`; clean text unchanged | Not started |
+| Browser connector | Unit test with fixture Chrome JSON + minimal SQLite; verify `type="bookmark"`, `importance=0.6`, dedup | Not started |
+| Tag management | Unit test: add/remove/list tags; `--tag` search filter returns only matching memories | Not started |
+| Pin / Unpin | Unit test: pin a memory, run decay, verify its importance is unchanged | Not started |
+| Export / Import | Round-trip test: export N memories to JSON, wipe store, import, verify count matches | Not started |
+| Audit | Insert duplicate summaries, run audit, verify both issues are reported | Not started |
+| REPL | Integration test: mock `input()` to feed queries, verify results are printed | Not started |
+| Webhook | HTTP test with FastAPI TestClient: `POST /memory/ingest` creates memory; duplicate returns `"duplicate"` | Not started |
 | CLI | End-to-end: run commands, verify stdout output | Not started |
 | API | HTTP tests with FastAPI TestClient | Not started |
 | Daemon | Integration test: verify connector runs produce new memories | Not started |
@@ -1833,4 +2615,4 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 
 ---
 
-*Last updated: February 25, 2026*
+*Last updated: February 26, 2026*
