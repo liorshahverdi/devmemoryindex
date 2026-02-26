@@ -1455,6 +1455,592 @@ Use `small` for developer dictation — technical vocabulary benefits from the l
 
 ---
 
+### 2.9b Meeting Connector + Speaker Identification
+
+**Files:**
+- `connectors/meeting_connector.py` — ingest a meeting audio file, diarize, identify speakers, store per-speaker memories
+- `core/speaker_profile.py` — enroll your voice once; load profile; cosine-similarity identification
+- `cli/commands/enroll.py` — `devmemory voice enroll`
+
+**Purpose:** Auto-index audio from recorded work meetings (Zoom, Teams, Google Meet local exports). Segments the audio by speaker turn, identifies which speaker is *you* using a stored voiceprint, and stores two classes of memory:
+- `meeting_self` — things **you** said (higher importance, fully indexed)
+- `meeting_context` — things **others** said (lower importance, available for search context)
+
+This is a companion to `VoiceConnector` (live dictation). `MeetingConnector` operates on existing files, not live mic input.
+
+---
+
+**Dependencies:**
+
+```bash
+uv add pyannote.audio faster-whisper scipy huggingface_hub
+```
+
+| Library | Role |
+|---|---|
+| `pyannote.audio 3.x` | Speaker diarization + per-segment speaker embeddings |
+| `faster-whisper` | Transcription with word-level timestamps (replaces `openai-whisper`) |
+| `scipy` | Cosine distance for speaker similarity |
+| `huggingface_hub` | Token auth for pyannote model download |
+
+**One-time HuggingFace setup (required for pyannote):**
+
+1. Create a free account at `huggingface.co`
+2. Accept the model terms at `hf.co/pyannote/speaker-diarization-3.1` and `hf.co/pyannote/segmentation-3.0`
+3. Generate a read token at `hf.co/settings/tokens`
+4. Store it locally — pyannote reads it automatically:
+
+```bash
+huggingface-cli login
+# paste your token when prompted; it saves to ~/.cache/huggingface/token
+```
+
+---
+
+**`core/speaker_profile.py`**
+
+```python
+import json
+import numpy as np
+from pathlib import Path
+from scipy.spatial.distance import cosine
+
+PROFILE_PATH = Path.home() / ".devmemory" / "speaker_profile.json"
+
+def save_profile(embedding: np.ndarray, path: Path = PROFILE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"embedding": embedding.tolist()}, f)
+
+def load_profile(path: Path = PROFILE_PATH) -> np.ndarray:
+    with open(path) as f:
+        return np.array(json.load(f)["embedding"])
+
+def is_self(segment_embedding: np.ndarray, profile: np.ndarray, threshold: float = 0.25) -> bool:
+    """Cosine distance < threshold means same speaker. 0.25 is a practical starting point."""
+    return cosine(segment_embedding, profile) < threshold
+```
+
+> **Note on threshold:** cosine *distance* (not similarity) — lower = more similar. 0.25 maps to ~cos-sim 0.75. If enrollment is misidentifying you, lower the threshold (stricter). If it's missing you, raise it.
+
+---
+
+**`cli/commands/enroll.py`**
+
+```python
+import tempfile
+import numpy as np
+import sounddevice as sd
+import scipy.io.wavfile as wav
+import typer
+from core.speaker_profile import save_profile, PROFILE_PATH
+
+SAMPLE_RATE = 16000
+DURATION = 30  # seconds — enough for a robust embedding
+
+def enroll():
+    """Record your voice (30s) and save a speaker profile for meeting identification."""
+    typer.echo("Recording for 30 seconds. Speak naturally — describe your current project, read some code aloud, etc.")
+    typer.echo("Starting in 3...")
+    import time; time.sleep(3)
+
+    audio = sd.rec(DURATION * SAMPLE_RATE, samplerate=SAMPLE_RATE, channels=1, dtype="int16")
+    sd.wait()
+    typer.echo("Recording complete. Extracting voiceprint...")
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        wav.write(f.name, SAMPLE_RATE, audio)
+        embedding = _extract_embedding(f.name)
+
+    save_profile(embedding)
+    typer.echo(f"Voiceprint saved to {PROFILE_PATH}")
+    typer.echo("Run 'devmemory voice enroll' again any time to re-enroll.")
+
+def _extract_embedding(wav_path: str) -> np.ndarray:
+    from pyannote.audio import Model, Inference
+    model = Model.from_pretrained("pyannote/embedding", use_auth_token=True)
+    inference = Inference(model, window="whole")
+    return inference(wav_path)
+```
+
+---
+
+**`connectors/meeting_connector.py`**
+
+```python
+import hashlib
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+from faster_whisper import WhisperModel
+from pyannote.audio import Pipeline, Model, Inference
+
+from connectors.base import Connector
+from core.embeddings import embed
+from core.schema import Memory
+from core.speaker_profile import load_profile, is_self
+
+
+class MeetingConnector(Connector):
+    name = "meeting"
+
+    def __init__(
+        self,
+        audio_path: str,
+        whisper_model: str = "small",
+        repo: str | None = None,
+        self_threshold: float = 0.25,
+    ):
+        super().__init__()
+        self.audio_path = Path(audio_path)
+        self.whisper_model = whisper_model
+        self.repo = repo
+        self.self_threshold = self_threshold
+        self._whisper = None
+        self._diarizer = None
+        self._embedder = None
+
+    # ── lazy loaders ──────────────────────────────────────────────────────────
+
+    def _get_whisper(self):
+        if self._whisper is None:
+            self._whisper = WhisperModel(self.whisper_model, device="cpu", compute_type="int8")
+        return self._whisper
+
+    def _get_diarizer(self):
+        if self._diarizer is None:
+            self._diarizer = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1", use_auth_token=True
+            )
+        return self._diarizer
+
+    def _get_embedder(self):
+        if self._embedder is None:
+            model = Model.from_pretrained("pyannote/embedding", use_auth_token=True)
+            self._embedder = Inference(model, window="whole")
+        return self._embedder
+
+    # ── main pipeline ─────────────────────────────────────────────────────────
+
+    def collect(self) -> int:
+        profile = load_profile()
+        transcription = self._transcribe()           # list of (start, end, text)
+        diarization = self._diarize()                # list of (start, end, speaker_label)
+        merged = self._merge(transcription, diarization)   # list of (start, end, text, speaker_label)
+        return self._store_memories(merged, profile)
+
+    def _transcribe(self) -> list[tuple[float, float, str]]:
+        segments, _ = self._get_whisper().transcribe(
+            str(self.audio_path), word_timestamps=False
+        )
+        return [(s.start, s.end, s.text.strip()) for s in segments]
+
+    def _diarize(self) -> list[tuple[float, float, str]]:
+        result = self._get_diarizer()(str(self.audio_path))
+        return [
+            (turn.start, turn.end, speaker)
+            for turn, _, speaker in result.itertracks(yield_label=True)
+        ]
+
+    def _merge(self, transcript, diarization) -> list[tuple]:
+        """Assign each transcript segment to the diarization speaker with max overlap."""
+        merged = []
+        for t_start, t_end, text in transcript:
+            best_speaker, best_overlap = "UNKNOWN", 0.0
+            for d_start, d_end, speaker in diarization:
+                overlap = max(0.0, min(t_end, d_end) - max(t_start, d_start))
+                if overlap > best_overlap:
+                    best_overlap, best_speaker = overlap, speaker
+            merged.append((t_start, t_end, text, best_speaker))
+        return merged
+
+    def _speaker_embedding(self, start: float, end: float) -> np.ndarray | None:
+        try:
+            from pyannote.core import Segment
+            return self._get_embedder().crop(str(self.audio_path), Segment(start, end))
+        except Exception:
+            return None
+
+    def _store_memories(self, merged: list[tuple], profile: np.ndarray) -> int:
+        count = 0
+        for start, end, text, speaker_label in merged:
+            if not text:
+                continue
+
+            seg_emb = self._speaker_embedding(start, end)
+            speaker_is_self = seg_emb is not None and is_self(seg_emb, profile, self.self_threshold)
+
+            mem_type = "meeting_self" if speaker_is_self else "meeting_context"
+            importance = 0.85 if speaker_is_self else 0.4
+            tags = ["meeting", "self"] if speaker_is_self else ["meeting", "participant"]
+            source_label = f"meeting:{self.audio_path.name}"
+
+            mem_id = hashlib.sha256(
+                (text + source_label + str(round(start, 1))).encode()
+            ).hexdigest()
+
+            if self.store.exists(mem_id):
+                continue
+
+            memory = Memory(
+                id=mem_id,
+                type=mem_type,
+                summary=text[:200],
+                raw_text=text,
+                source=source_label,
+                repo=self.repo,
+                timestamp=datetime.utcnow(),
+                tags=tags,
+                importance=importance,
+            )
+            self.store.add(memory, embed(memory.summary))
+            count += 1
+        return count
+```
+
+**Register the `ingest` command to support `--source meeting`:**
+
+```bash
+devmemory ingest --source meeting /path/to/recording.mp4
+# or with options:
+devmemory ingest --source meeting ~/Zoom/2026-02-26.mp4 --repo my-project --whisper-model small
+```
+
+**Register `voice enroll` in CLI:**
+
+```python
+# cli/commands/enroll.py registers under a `voice` sub-app in cli/main.py
+voice_app = typer.Typer()
+voice_app.command("enroll")(enroll)
+app.add_typer(voice_app, name="voice")
+```
+
+---
+
+**New Memory Types to add to `core/schema.py` docs / type literals:**
+
+| Type | Source | Importance | Tags |
+|---|---|---|---|
+| `meeting_self` | `MeetingConnector` | 0.85 | `["meeting", "self"]` |
+| `meeting_context` | `MeetingConnector` | 0.4 | `["meeting", "participant"]` |
+
+---
+
+### Hands-On Testing Steps
+
+These steps use only macOS built-ins (`say`, `ffmpeg`) plus the project dependencies. No real meeting required.
+
+---
+
+#### Step 0 — Prerequisites
+
+```bash
+# Confirm ffmpeg is available (install via brew if not)
+ffmpeg -version
+
+# Confirm HuggingFace token is stored
+cat ~/.cache/huggingface/token   # should print your token
+
+# Install deps
+uv add pyannote.audio faster-whisper scipy huggingface_hub
+```
+
+---
+
+#### Step 1 — Generate a Synthetic Two-Speaker Meeting
+
+Use macOS `say` with two different voices to simulate you vs. a colleague. This avoids needing a real recording.
+
+```bash
+# Voice 1 (you — will enroll this voice as "self")
+say -v Alex  "I think we should migrate the auth service to JWT before Q2. The current session cookie approach breaks under horizontal scaling." \
+    -o /tmp/speaker_self.aiff
+
+# Voice 2 (colleague)
+say -v Samantha "Agreed. The infra team said they need about two weeks to rotate the certificates. We should start the migration doc this week." \
+    -o /tmp/speaker_other.aiff
+
+# Convert both to 16kHz mono WAV (Whisper + pyannote requirement)
+ffmpeg -y -i /tmp/speaker_self.aiff  -ar 16000 -ac 1 /tmp/self.wav
+ffmpeg -y -i /tmp/speaker_other.aiff -ar 16000 -ac 1 /tmp/other.wav
+
+# Add 1-second silence between speakers and concatenate
+ffmpeg -y -f lavfi -t 1 -i anullsrc=r=16000:cl=mono /tmp/silence.wav
+ffmpeg -y -i "concat:/tmp/self.wav|/tmp/silence.wav|/tmp/other.wav" \
+    -ar 16000 -ac 1 /tmp/test_meeting.wav
+
+# Verify: should be ~10–15 seconds
+ffprobe -i /tmp/test_meeting.wav -show_entries format=duration -v quiet -of csv=p=0
+```
+
+---
+
+#### Step 2 — Enroll Your Voice
+
+Generate a second Alex clip (same voice = "you") to use as the enrollment sample:
+
+```bash
+say -v Alex \
+  "Hi, this is my enrollment recording. I work on developer tools, mostly Python and TypeScript. \
+   I use LanceDB for vector storage and Whisper for speech to text. \
+   Our main repo is devmemoryindex and I run tests with pytest." \
+  -o /tmp/enroll.aiff
+
+ffmpeg -y -i /tmp/enroll.aiff -ar 16000 -ac 1 /tmp/enroll.wav
+```
+
+Then, instead of recording live mic, temporarily call the enrollment embedding path directly in a Python REPL to test it without needing a microphone:
+
+```bash
+python - <<'EOF'
+from core.speaker_profile import save_profile
+from cli.commands.enroll import _extract_embedding
+
+emb = _extract_embedding("/tmp/enroll.wav")
+save_profile(emb)
+print(f"Profile saved. Embedding shape: {emb.shape}")
+EOF
+```
+
+Expected output: `Profile saved. Embedding shape: (512,)` (or 192, depending on pyannote model version).
+
+---
+
+#### Step 3 — Manually Test Speaker Identification
+
+Before running the full connector, verify that the self-vs-other cosine distance logic works on your synthetic clips:
+
+```bash
+python - <<'EOF'
+import numpy as np
+from pyannote.audio import Model, Inference
+from core.speaker_profile import load_profile, is_self
+from pyannote.core import Segment
+
+model = Model.from_pretrained("pyannote/embedding", use_auth_token=True)
+inf = Inference(model, window="whole")
+
+profile = load_profile()
+
+# Same voice as enrollment — should be "self"
+self_emb = inf("/tmp/self.wav")
+other_emb = inf("/tmp/other.wav")
+
+from scipy.spatial.distance import cosine
+print(f"Self distance:  {cosine(self_emb, profile):.4f}  → is_self={is_self(self_emb, profile)}")
+print(f"Other distance: {cosine(other_emb, profile):.4f}  → is_self={is_self(other_emb, profile)}")
+EOF
+```
+
+Expected:
+```
+Self distance:  0.08–0.18  → is_self=True
+Other distance: 0.40–0.70  → is_self=False
+```
+
+If self-distance is above 0.25, adjust `threshold` in `speaker_profile.py`. If other-distance is below 0.25, lower the threshold. The gap between the two values is your margin.
+
+---
+
+#### Step 4 — Run the Full Meeting Connector
+
+```bash
+python - <<'EOF'
+from connectors.meeting_connector import MeetingConnector
+
+conn = MeetingConnector(
+    audio_path="/tmp/test_meeting.wav",
+    whisper_model="small",
+    repo="devmemoryindex",
+)
+n = conn.collect()
+print(f"Indexed {n} memories from meeting.")
+EOF
+```
+
+Expected: `Indexed 2 memories from meeting.` (one `meeting_self`, one `meeting_context`).
+
+---
+
+#### Step 5 — Verify in CLI
+
+```bash
+# Should surface the JWT/auth content you "said"
+devmemory search "auth migration JWT"
+
+# Check that types are correct
+devmemory search "auth" --type meeting_self
+devmemory search "certificates" --type meeting_context
+
+# Stats should show both new types
+devmemory stats
+```
+
+Expected in stats output:
+
+```
+meeting_self       1
+meeting_context    1
+```
+
+---
+
+#### Step 6 — Run Unit Tests
+
+**`connectors/tests/test_meeting_connector.py`**
+
+```python
+import numpy as np
+import pytest
+from unittest.mock import MagicMock, patch
+from connectors.meeting_connector import MeetingConnector
+
+FAKE_TRANSCRIPT = [(0.0, 5.0, "We should migrate auth to JWT.")]
+FAKE_DIARIZATION = [(0.0, 5.0, "SPEAKER_00")]
+FAKE_PROFILE = np.ones(512) / np.linalg.norm(np.ones(512))
+SELF_EMB   = FAKE_PROFILE.copy()          # cosine distance ≈ 0 → is_self=True
+OTHER_EMB  = -FAKE_PROFILE.copy()         # cosine distance ≈ 2 → is_self=False
+
+@pytest.fixture
+def connector(tmp_path):
+    conn = MeetingConnector(audio_path=str(tmp_path / "meeting.wav"), repo="test")
+    conn.store = MagicMock()
+    conn.store.exists.return_value = False
+    return conn
+
+def test_self_segment_stored_as_meeting_self(connector):
+    with patch.object(connector, "_transcribe", return_value=FAKE_TRANSCRIPT), \
+         patch.object(connector, "_diarize",    return_value=FAKE_DIARIZATION), \
+         patch.object(connector, "_speaker_embedding", return_value=SELF_EMB), \
+         patch("connectors.meeting_connector.load_profile", return_value=FAKE_PROFILE):
+        count = connector.collect()
+
+    assert count == 1
+    stored = connector.store.add.call_args[0][0]
+    assert stored.type == "meeting_self"
+    assert stored.importance == 0.85
+    assert "self" in stored.tags
+
+def test_other_segment_stored_as_meeting_context(connector):
+    with patch.object(connector, "_transcribe", return_value=FAKE_TRANSCRIPT), \
+         patch.object(connector, "_diarize",    return_value=FAKE_DIARIZATION), \
+         patch.object(connector, "_speaker_embedding", return_value=OTHER_EMB), \
+         patch("connectors.meeting_connector.load_profile", return_value=FAKE_PROFILE):
+        count = connector.collect()
+
+    assert count == 1
+    stored = connector.store.add.call_args[0][0]
+    assert stored.type == "meeting_context"
+    assert stored.importance == 0.4
+    assert "participant" in stored.tags
+
+def test_duplicate_segment_skipped(connector):
+    connector.store.exists.return_value = True
+    with patch.object(connector, "_transcribe", return_value=FAKE_TRANSCRIPT), \
+         patch.object(connector, "_diarize",    return_value=FAKE_DIARIZATION), \
+         patch.object(connector, "_speaker_embedding", return_value=SELF_EMB), \
+         patch("connectors.meeting_connector.load_profile", return_value=FAKE_PROFILE):
+        count = connector.collect()
+
+    assert count == 0
+    connector.store.add.assert_not_called()
+
+def test_empty_transcript_segment_skipped(connector):
+    with patch.object(connector, "_transcribe", return_value=[(0.0, 2.0, "")]), \
+         patch.object(connector, "_diarize",    return_value=FAKE_DIARIZATION), \
+         patch("connectors.meeting_connector.load_profile", return_value=FAKE_PROFILE):
+        count = connector.collect()
+
+    assert count == 0
+```
+
+Run them:
+
+```bash
+pytest connectors/tests/test_meeting_connector.py -v
+```
+
+Expected: **4 passed**.
+
+---
+
+**`core/tests/test_speaker_profile.py`**
+
+```python
+import numpy as np
+import pytest
+from core.speaker_profile import save_profile, load_profile, is_self
+
+def test_save_and_load_roundtrip(tmp_path):
+    path = tmp_path / "profile.json"
+    emb = np.random.rand(512).astype(np.float32)
+    save_profile(emb, path)
+    loaded = load_profile(path)
+    np.testing.assert_allclose(emb, loaded, rtol=1e-5)
+
+def test_is_self_identical_embedding():
+    emb = np.ones(512)
+    assert is_self(emb, emb, threshold=0.25) is True
+
+def test_is_self_orthogonal_embedding():
+    a = np.zeros(512); a[0] = 1.0
+    b = np.zeros(512); b[1] = 1.0
+    assert is_self(a, b, threshold=0.25) is False
+
+def test_is_self_threshold_boundary():
+    # distance exactly at threshold should NOT be self (strict <)
+    from scipy.spatial.distance import cosine
+    a = np.ones(512)
+    # craft b so cosine(a, b) = 0.25 exactly
+    b = a.copy()
+    b[0] -= 1.5
+    b /= np.linalg.norm(b)
+    dist = cosine(a / np.linalg.norm(a), b)
+    result = is_self(a / np.linalg.norm(a), b, threshold=round(dist, 6))
+    assert result is False
+```
+
+Run them:
+
+```bash
+pytest core/tests/test_speaker_profile.py -v
+```
+
+Expected: **4 passed**.
+
+---
+
+**Model tradeoffs:**
+
+| Diarization model | Accuracy | GPU required | Notes |
+|---|---|---|---|
+| `pyannote/speaker-diarization-3.1` | High | No (slow on CPU) | Best quality; recommended |
+| `resemblyzer` + `simple_diarizer` | Medium | No | No HuggingFace token needed; faster setup |
+
+If you want to avoid the HuggingFace token requirement entirely during development, `resemblyzer` is a drop-in swap for the embedding + diarization steps — swap it in `meeting_connector.py` and `speaker_profile.py` only.
+
+---
+
+**Future daemon integration:**
+
+```python
+# daemon/jobs/meeting_watcher.py
+# Watch ~/Zoom, ~/Downloads for *.mp4 / *.m4a, auto-ingest new files
+WATCH_DIRS = [Path.home() / "Zoom", Path.home() / "Downloads"]
+EXTENSIONS = {".mp4", ".m4a", ".wav", ".mp3"}
+```
+
+**Done when:**
+- `devmemory voice enroll` saves a voiceprint without error.
+- `devmemory ingest --source meeting /tmp/test_meeting.wav` returns "Indexed N memories."
+- `devmemory search "JWT auth"` returns the `meeting_self` segment you "spoke" in Step 1.
+- `devmemory search "certificates"` returns the `meeting_context` segment from the other speaker.
+- All 8 unit tests pass.
+
+---
+
 ### 2.10 Browser Bookmarks Connector
 
 **File:** `connectors/browser_connector.py`
@@ -2570,6 +3156,7 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | **Next** | 1.8 | **Privacy / Redaction Filter** (`core/privacy.py`, hook into base connector) | Phase 1.7 | |
 | **Next** | 2 | Connectors (git, terminal, filesystem, markdown, claude, copilot) | Phase 1.7 | |
 | **Next** | 2.9 | **Voice Connector** (`VoiceConnector` + Whisper STT) | Phase 2 | |
+| **Next** | 2.9b | **Meeting Connector** (`MeetingConnector` + `speaker_profile.py` + `enroll` command) | Phase 2.9 | |
 | **Next** | 2.10 | **Browser Bookmarks Connector** (Chrome JSON + Firefox SQLite) | Phase 2 | |
 | **Next** | 3.2a | **CLI `ingest` command** | Phase 2 | |
 | **Next** | 3.2d | **CLI `dictate` command** | Phase 2.9 | |
@@ -2599,6 +3186,8 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | Context engine | Integration test: verify token budget, dedup, format output | Not started |
 | Each connector | Unit test with mock data (temp repos, fake history files, mock JSON) | Not started |
 | Voice connector | Unit test with mocked `sd.rec` and `whisper.load_model` returning known transcript | Not started |
+| Speaker profile | Unit test: save/load roundtrip, `is_self` with identical/orthogonal/boundary embeddings | Not started |
+| Meeting connector | Unit test with mocked transcript + diarization + embeddings: verify `meeting_self`/`meeting_context` types, importance, tags, dedup | Not started |
 | Privacy filter | Unit test: API key / bearer token patterns → `[REDACTED]`; clean text unchanged | Not started |
 | Browser connector | Unit test with fixture Chrome JSON + minimal SQLite; verify `type="bookmark"`, `importance=0.6`, dedup | Not started |
 | Tag management | Unit test: add/remove/list tags; `--tag` search filter returns only matching memories | Not started |
@@ -2615,4 +3204,4 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 
 ---
 
-*Last updated: February 26, 2026*
+*Last updated: February 26, 2026 — Added Phase 2.9b: Meeting Connector + Speaker Identification*

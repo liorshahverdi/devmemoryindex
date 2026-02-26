@@ -16,8 +16,6 @@ def search(
     store = get_store()
     vector = embed(query)
 
-    # TODO: Uses `semantic_search()` for now.
-    # After Phase 1.5 (hybrid search), update this to call `hybrid_search()` instead.
     results = store.hybrid_search(query, vector, k=k * 3)
 
     # Apply CLI filters
