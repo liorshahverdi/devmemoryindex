@@ -39,9 +39,45 @@ class MemoryStore:
             "vector": vector
         }])
 
+    def exists(self, memory_id: str) -> bool:
+        try:
+            results = (
+                self.collection
+                .search()
+                .where(f"id = '{memory_id}'")
+                .limit(1)
+                .to_list()
+            )
+            return len(results) > 0
+        except Exception:
+            return False
+
+    def reinforce(self, memory_id: str, boost: float = 0.05) -> None:
+        """Boost importance of a retrieved memory (cap at 1.0). Called after search hits."""
+        try:
+            results = (
+                self.collection
+                .search()
+                .where(f"id = '{memory_id}'")
+                .limit(1)
+                .to_list()
+            )
+            if not results:
+                return
+            new_importance = min(1.0, results[0].get("importance", 0.5) + boost)
+            self.collection.update(
+                where=f"id = '{memory_id}'",
+                values={"importance": new_importance},
+            )
+        except Exception:
+            pass  # Non-critical
+
     def semantic_search(self, vector: list, k: int = 5) -> list:
-        return self.collection.search(vector).limit(k).to_list()
-    
+        results = self.collection.search(vector).limit(k).to_list()
+        for r in results:
+            self.reinforce(r["id"], boost=0.05)
+        return results
+
     def hybrid_search(self, query: str, vector: list, k: int = 5) -> list:
         # 1. Semantic search — over-retrieve
         semantic_results = self.collection.search(vector).limit(50).to_list()
@@ -68,17 +104,17 @@ class MemoryStore:
         # 4. Score and rank
         ranked = sorted(combined.values(), key=compute_score, reverse=True)
 
+        # 5. Reinforce retrieved memories (access-aware importance)
+        for r in ranked[:k]:
+            self.reinforce(r["id"], boost=0.05)
+
         return ranked[:k]
-    
+
     def delete(self, memory_id: str):
         self.collection.delete(f"id = '{memory_id}'")
 
     def count(self) -> int:
         return self.collection.count_rows()
-    
+
     def get_all(self) -> list:
-        """
-        Returns all memories as a list of dicts.
-        For debugging use.
-        """
-        return self.collection.to_pandas().to_dict(orient="records")
+        return self.collection.to_arrow().to_pylist()

@@ -19,5 +19,19 @@ app.command()(search)
 app.command()(add)
 app.command()(stats)
 
+# Phase 5.4B — memory pruning
+from cli.commands.prune import prune
+app.command()(prune)
+
+# Phase 2.9 — voice dictation
+from cli.commands.dictate import dictate
+app.command()(dictate)
+
+# Phase 2.9b — voice enroll (devmemory voice enroll)
+from cli.commands.enroll import enroll
+voice_app = typer.Typer(help="Voice commands (enrollment, speaker profile).")
+voice_app.command("enroll")(enroll)
+app.add_typer(voice_app, name="voice")
+
 if __name__ == "__main__":
     app()

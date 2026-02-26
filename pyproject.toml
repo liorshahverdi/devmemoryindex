@@ -11,6 +11,14 @@ dependencies = [
 [project.scripts]
 devmemory = "cli.main:app"
 
+[project.optional-dependencies]
+voice = [
+    "openai-whisper",
+    "sounddevice",
+    "scipy",
+    "pyannote.audio",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0",
