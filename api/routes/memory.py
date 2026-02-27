@@ -1,6 +1,6 @@
 import hashlib
 from datetime import datetime
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from core.store_provider import get_store
 from core.schema import Memory
@@ -16,6 +16,25 @@ class MemoryInput(BaseModel):
     repo: str | None = None
     importance: float = 0.9
     tags: list[str] = []
+
+
+@router.get("/{memory_id}")
+def get_memory(memory_id: str):
+    """Fetch a single memory by ID. Used to resolve related memory IDs from search results."""
+    store = get_store()
+    record = store.get_by_id(memory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {
+        "id": record.get("id"),
+        "type": record.get("type"),
+        "summary": record.get("summary"),
+        "raw_text": record.get("raw_text"),
+        "repo": record.get("repo"),
+        "importance": record.get("importance"),
+        "tags": record.get("tags", []),
+        "timestamp": str(record.get("timestamp")),
+    }
 
 
 @router.post("/remember")

@@ -56,7 +56,14 @@ class ContextEngine:
             (intent, {}) if intent else classify_intent(query)
         )
         if routing:
-            candidates = self._apply_intent_routing(candidates, routing)
+            if routing.get("sort_by_time"):
+                candidates = sorted(
+                    candidates,
+                    key=lambda m: m.get("timestamp") or 0,
+                    reverse=True,
+                )
+            else:
+                candidates = self._apply_intent_routing(candidates, routing)
 
         # 4. Deduplicate near-identical summaries
         candidates = self._deduplicate(candidates)
@@ -67,7 +74,7 @@ class ContextEngine:
         )
 
         # 5. Format output
-        context_text = self._format(selected, format)
+        context_text = self._format(selected, format, intent=detected_intent)
 
         result = {
             "query": query,
@@ -108,7 +115,10 @@ class ContextEngine:
                 unique.append(m)
         return unique
 
-    def _format(self, memories: list, fmt: str) -> str:
+    def _format(self, memories: list, fmt: str, intent: str = "general") -> str:
+        if intent == "recall":
+            return self._format_recall(memories, fmt)
+
         if fmt == "claude":
             header = "<context>\n"
             body = "\n".join(
@@ -130,3 +140,38 @@ class ContextEngine:
 
         # raw
         return "\n\n".join(m["summary"] for m in memories)
+
+    def _format_recall(self, memories: list, fmt: str) -> str:
+        """Time-ordered format for recall queries — always shows the date."""
+        def _date(m: dict) -> str:
+            ts = m.get("timestamp")
+            if ts is None:
+                return "unknown date"
+            try:
+                if hasattr(ts, "strftime"):
+                    return ts.strftime("%Y-%m-%d")
+                from datetime import datetime
+                return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
+            except Exception:
+                return str(ts)[:10]
+
+        if fmt == "claude":
+            lines = ["<context>\n"]
+            for m in memories:
+                lines.append(
+                    f"- [{_date(m)}] [{m.get('type', 'memory')}] {m['summary']} "
+                    f"(repo: {m.get('repo', 'N/A')})"
+                )
+            return "\n".join(lines) + "\n</context>"
+
+        if fmt == "markdown":
+            lines = ["### Timeline\n"]
+            for m in memories:
+                lines.append(
+                    f"- **{_date(m)}** — {m['summary']}  \n"
+                    f"  Repo: {m.get('repo', 'N/A')}"
+                )
+            return "\n".join(lines)
+
+        # raw
+        return "\n\n".join(f"[{_date(m)}] {m['summary']}" for m in memories)

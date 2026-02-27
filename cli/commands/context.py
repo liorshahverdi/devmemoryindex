@@ -33,9 +33,12 @@ def context(
         format=format,
     )
 
+    intent = result.get("intent", "general")
+
     if as_json:
         output = {
             "query": result["query"],
+            "intent": intent,
             "context_text": result["context_text"],
             "token_estimate": result["token_estimate"],
             "memory_count": result["memory_count"],
@@ -58,7 +61,8 @@ def context(
         except Exception:
             console.print("\n[yellow]Could not copy to clipboard.[/yellow]")
 
+    intent_str = f" · (intent: {intent})" if intent != "general" else ""
     console.print(
         f"\n[dim]{result['memory_count']} memories · "
-        f"~{result['token_estimate']} tokens[/dim]"
+        f"~{result['token_estimate']} tokens{intent_str}[/dim]"
     )

@@ -69,15 +69,18 @@ def search(
             console.print("[yellow]Query too short. Try again.[/yellow]")
             raise typer.Exit(1)
 
-        from core.intent_classifier import classify_intent
-        intent_label, _ = classify_intent(text)
-        intent_str = f" [dim](intent: {intent_label})[/dim]" if intent_label != "general" else ""
+        from core.intent_classifier import classify_intent as _ci
+        _label, _ = _ci(text)
+        intent_str = f" [dim](intent: {_label})[/dim]" if _label != "general" else ""
         console.print(f'\nSearching for: [bold]"{text}"[/bold]{intent_str}\n')
         query = text
 
     elif query is None:
         console.print("[red]Provide a query or use --voice.[/red]")
         raise typer.Exit(1)
+
+    from core.intent_classifier import classify_intent
+    intent_label, routing = classify_intent(query)
 
     store = get_store()
     vector = embed(query)
@@ -87,23 +90,35 @@ def search(
         repo_filter=repo,
     )
 
+    # Recall intent: sort by timestamp descending
+    if routing.get("sort_by_time"):
+        results = sorted(results, key=lambda r: r.get("timestamp") or 0, reverse=True)
+
     if not results:
         console.print("[yellow]No memories found.[/yellow]")
         return
 
+    is_recall = routing.get("sort_by_time", False)
+
     table = Table(title=f"Results for: {query}")
+    if is_recall:
+        table.add_column("Date", style="dim", width=12)
     table.add_column("Type", style="cyan", width=16)
     table.add_column("Summary", style="white")
     table.add_column("Repo", style="green", width=16)
-    table.add_column("Importance", justify="right", width=10)
 
     for r in results:
-        table.add_row(
-            r.get("type", ""),
-            r.get("summary", "")[:80],
-            r.get("repo", "N/A") or "N/A",
-            f"{r.get('importance', 0.5):.1f}",
-        )
+        ts = r.get("timestamp")
+        try:
+            date_str = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)[:10]
+        except Exception:
+            date_str = ""
+
+        row = [r.get("type", ""), r.get("summary", "")[:80], r.get("repo", "N/A") or "N/A"]
+        if is_recall:
+            table.add_row(date_str, *row)
+        else:
+            table.add_row(*row)
 
     console.print(table)
 

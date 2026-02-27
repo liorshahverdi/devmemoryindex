@@ -31,6 +31,7 @@ INTENT_RULES: dict[str, dict] = {
         "type_boost": ["voice_note", "agent_solution"],
         "importance_weight": 0.10,
         "recency_weight": 0.25,  # recall is highly recency-sensitive
+        "sort_by_time": True,    # override score ranking — sort by timestamp descending
     },
     "architecture": {
         "keywords": [

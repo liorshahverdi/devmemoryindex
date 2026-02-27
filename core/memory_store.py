@@ -149,6 +149,21 @@ class MemoryStore:
 
         return top
 
+    def get_by_id(self, memory_id: str) -> dict | None:
+        """Fetch a single memory by exact ID. Returns None if not found."""
+        safe_id = memory_id.replace("'", "''")
+        try:
+            results = (
+                self.collection
+                .search()
+                .where(f"id = '{safe_id}'")
+                .limit(1)
+                .to_list()
+            )
+            return results[0] if results else None
+        except Exception:
+            return None
+
     def delete(self, memory_id: str):
         self.collection.delete(f"id = '{memory_id}'")
 

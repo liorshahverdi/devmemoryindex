@@ -1,7 +1,7 @@
 """
 MCP tool implementations for DevMemoryIndex.
 
-These three functions are exposed as MCP tools via mcp_server/server.py.
+These functions are exposed as MCP tools via mcp_server/server.py.
 Their docstrings are what Claude sees as the tool description — keep them
 precise and action-oriented.
 
@@ -9,6 +9,7 @@ Tool summary:
   search_memories  — hybrid search (semantic + keyword) over the memory store
   build_context    — returns a formatted context block ready to paste into a prompt
   remember_memory  — persists a solution/decision so it's findable in future sessions
+  get_memory       — fetch a single memory by ID (use to resolve related[] from search results)
 """
 
 import hashlib
@@ -46,20 +47,18 @@ def search_memories(
     """
     store = get_store()
     vector = embed(query)
-    results = store.hybrid_search(query, vector, k=k * 2)
-    if memory_type:
-        results = [r for r in results if r.get("type") == memory_type]
-    if repo:
-        results = [r for r in results if r.get("repo") == repo]
+    results = store.hybrid_search(query, vector, k=k, type_filter=memory_type, repo_filter=repo)
     return [
         {
+            "id": r["id"],
             "summary": r["summary"],
             "type": r["type"],
             "repo": r.get("repo"),
             "importance": r.get("importance"),
             "tags": r.get("tags", []),
+            "related": r.get("related", []),
         }
-        for r in results[:k]
+        for r in results
     ]
 
 
@@ -149,3 +148,34 @@ def remember_memory(
     )
     store.add(memory, embed(memory.summary))
     return {"status": "ok", "id": mem_id}
+
+
+def get_memory(memory_id: str) -> dict | None:
+    """Fetch a single memory by its exact ID.
+
+    Use this to resolve related memory IDs returned by search_memories. Each
+    search result includes a "related" field — a list of IDs of semantically
+    nearby memories that didn't make it into the top-k results. Call get_memory
+    on those IDs to pull in connected context without an extra search.
+
+    Args:
+        memory_id: The exact memory ID string (from search result "id" or "related" fields).
+
+    Returns:
+        Dict with keys: id, type, summary, raw_text, repo, importance, tags, timestamp.
+        None if not found.
+    """
+    store = get_store()
+    record = store.get_by_id(memory_id)
+    if record is None:
+        return None
+    return {
+        "id": record.get("id"),
+        "type": record.get("type"),
+        "summary": record.get("summary"),
+        "raw_text": record.get("raw_text"),
+        "repo": record.get("repo"),
+        "importance": record.get("importance"),
+        "tags": record.get("tags", []),
+        "timestamp": str(record.get("timestamp")),
+    }

@@ -46,13 +46,18 @@
 | `connectors/claude_connector.py` | **Done** | Indexes `~/.claude/projects/**/*.jsonl` assistant responses (>= 150 chars). Repo from `cwd`. 89 memories on first run. |
 | `connectors/terminal_connector.py` | **Done** | Indexes last 500 unique commands from `~/.zsh_history` / `~/.bash_history`. Filters trivial commands. Importance: docker/kubectl=0.8, git rebase=0.7, pip/uv=0.6. 535 memories on first run. |
 | `connectors/voice_connector.py` | **Done** | Records mic audio, transcribes with Whisper, checks speaker identity (cosine), stores as `voice_note` or `voice_ambient`. |
-| `core/intent_classifier.py` | **Done** | Rule-based classifier: debug / recall / architecture / implementation / general. Integrated into `ContextEngine.build()` and `search --voice`. Recall rule checked before implementation to prevent keyword overlap. |
+| `core/intent_classifier.py` | **Done** | Rule-based classifier: debug / recall / architecture / implementation / general. Integrated into `ContextEngine.build()` and `search --voice`. Recall rule checked before implementation to prevent keyword overlap. Recall intent sets `sort_by_time: True` — results sorted by timestamp descending, output formatted as timeline with visible dates. |
 | `connectors/markdown_connector.py` | **Done** | Indexes `.md` files from configured scan dirs. Chunks by H2 headings. Parses YAML frontmatter (title, tags). Skips hidden dirs. importance=0.85 for "important" tagged files, 0.7 default. `devmemory config add-notes <dir>` to configure. |
 | `core/config.py` — markdown helpers | **Done** | `get_markdown_dirs()`, `add_markdown_dir()`, `remove_markdown_dir()` — `[markdown] scan_dirs` in config.toml. |
 | `cli/commands/config_cmd.py` — notes commands | **Done** | `devmemory config add-notes <dir>`, `devmemory config remove-notes <dir>`. `list` shows both git repos and markdown dirs. |
-| `core/memory_store.py` — type/repo filter in hybrid_search | **Done** | `hybrid_search()` now accepts `type_filter` and `repo_filter`; filters applied as DB-level WHERE clauses before the k-cap, preventing type-filtered searches from returning empty results. |
-| `mcp_server/server.py` | **Done** | FastMCP entrypoint, stdio transport, registered with Claude Code via `claude mcp add`. |
-| `mcp_server/tools.py` | **Done** | `search_memories`, `build_context`, `remember_memory` — full docstrings, confirmed working via `/mcp`. |
+| `core/memory_store.py` — type/repo filter in hybrid_search | **Done** | `hybrid_search()` now accepts `type_filter` and `repo_filter`; filters applied as DB-level WHERE clauses before the k-cap, preventing type-filtered searches from returning empty results. Each result includes `"related": [id, id, id]` — nearest neighbours from the semantic pool that didn't make top-k, at zero extra DB cost. |
+| `api/server.py` + `api/routes/` | **Done** | Phase 4B REST API. `GET /memory/search`, `POST /memory/remember`, `GET /memory/context`, `POST /memory/ingest` (webhook). `devmemory serve` CLI command. `[api]` optional extra (fastapi + uvicorn). GitHub Actions integration documented. |
+| `core/context_cache.py` | **Done** | Phase 5.B. Module-level LRU cache (50 entries, 5-min TTL) for `ContextEngine.build()`. Keyed on `sha256(query\|repo\|format\|intent)`. Auto-invalidated via `store.add()`. Context response includes `cached: true/false`. |
+| `daemon/jobs/dedup.py` | **Done** | Phase 5.C. Groups memories by `summary[:100].lower()`, keeps highest-importance duplicate, deletes the rest. Runs weekly (Mondays) in daemon scheduler. |
+| `core/memory_store.py` — get_by_id | **Done** | `get_by_id(memory_id)` — fetch a single memory by exact ID. Used to resolve `related[]` links from search results. |
+| `mcp_server/server.py` | **Done** | FastMCP entrypoint, stdio transport, registered with Claude Code via `claude mcp add`. 4 tools. |
+| `mcp_server/tools.py` | **Done** | `search_memories` (now uses DB-level type/repo filters, returns `id` + `related[]`), `build_context`, `remember_memory`, `get_memory` (resolves related IDs). |
+| `api/routes/memory.py` — GET /{id} | **Done** | `GET /memory/{memory_id}` — fetch single memory by ID, 404 if not found. |
 | `scripts/reset_importance.py` | **Done** | Clamps drifted importance values back to 0.8. `--dry-run` supported. |
 | `daemon/scheduler.py` | **Done** | `run_daemon(interval)` loop — calls all connectors, prunes daily, logs counts. |
 | `daemon/jobs/memory_cleanup.py` | **Done** | `prune_memories()` — removes importance < 0.05 OR (age > 90 days AND importance < 0.15). |
@@ -63,13 +68,12 @@
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
 
 **What's empty / partially implemented:**
-- `api/` — routes directory present but empty (Phase 4B, not yet started).
 - `connectors/` — git + claude + terminal + markdown + voice done. Filesystem, copilot, browser are TODO.
 - `daemon/watcher.py` — filesystem watcher not yet implemented.
 - `core/tests/try_queries.py` — broken; uses removed legacy functions (`save_memory`, `search_memory`).
 
 **What's next:**
-1. **Phase 4B** — REST API: external agent interface (CI/CD webhooks, cross-machine access)
+1. **Phase 6** — Memory compression: summarize old low-importance memories to save tokens
 
 ---
 
