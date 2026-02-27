@@ -28,16 +28,26 @@
 | `core/tests/test_ranking.py` | **Done** | 11 tests — recency decay, score formula, ranking order. All passing. |
 | `core/tests/test_hybrid_search.py` | **Done** | 5 tests — keyword surfacing, deduplication, hybrid-vs-semantic, importance ranking, k limit. All passing. |
 | `core/tests/try_queries.py` | **Broken** | Still uses removed legacy functions (`save_memory`, `search_memory`). Needs migration to `MemoryStore`. |
-| `cli/main.py` — Typer entrypoint | **Done** | Registers `search`, `add`, `stats`, `prune`, `dictate`, `voice` commands. `devmemory` CLI works. |
-| `cli/commands/search.py` | **Done** | Upgraded to `hybrid_search()`. Supports `--type` and `--repo` filters. |
+| `cli/main.py` — Typer entrypoint | **Done** | 14 commands registered: `search`, `add`, `stats`, `prune`, `dictate`, `voice`, `context`, `suggest`, `daemon`, `export`, `import`, `repl`, `ingest`, `config`. |
+| `cli/commands/search.py` | **Done** | `hybrid_search()`, `--type`/`--repo` filters, `--voice` (3s countdown + 8s record + quality gate), `--speak` flag. |
+| `cli/commands/context.py` | **Done** | `devmemory context` — wraps `ContextEngine`, supports `--format raw/markdown/claude`, `--json`, `--copy`, `--repo`, `--tokens`. |
+| `cli/commands/suggest.py` | **Done** | `devmemory suggest` — `git diff HEAD` → `ContextEngine` → print context. Falls back to `git log -5`. No query required. |
 | `cli/commands/add.py` | **Done** | Manual memory insertion via CLI. |
-| `cli/commands/stats.py` | **Done** | Shows total count and type breakdown (uses `to_arrow()` instead of `to_pandas()`). |
-| `cli/commands/prune.py` | **Done** | `devmemory prune` — deletes memories below importance floor or over age+importance threshold. |
-| `cli/commands/dictate.py` | **Done** | `devmemory dictate` — record 5–60s, transcribe via Whisper, auto-index as voice_note. Noise gate + min-word guard. |
-| `cli/commands/enroll.py` | **Done** | `devmemory voice enroll` — capture 30s voiceprint and save speaker profile for identity matching. |
+| `cli/commands/stats.py` | **Done** | Shows total count and type breakdown. |
+| `cli/commands/prune.py` | **Done** | Deletes memories below importance floor or over age+importance threshold. `--dry-run` supported. |
+| `cli/commands/dictate.py` | **Done** | Record 5–60s, transcribe via Whisper, auto-index as voice_note. Noise gate + min-word guard. |
+| `cli/commands/enroll.py` | **Done** | `devmemory voice enroll` — capture 30s voiceprint and save speaker profile. |
+| `cli/commands/daemon_cmd.py` | **Done** | `devmemory daemon` — starts background scheduler loop. |
+| `cli/commands/export.py` | **Done** | `devmemory export` / `devmemory import` — JSON dump and restore with duplicate skipping. |
+| `cli/commands/repl.py` | **Done** | Interactive prompt loop — model stays loaded between queries. |
 | `connectors/base.py` — Abstract Connector | **Done** | Abstract `Connector` class with `collect()` method and shared store access. |
-| `connectors/registry.py` | **Done** | `get_connectors()` factory; `ALL_CONNECTORS` list (currently empty — Phase 2 connectors not yet implemented). |
-| `connectors/voice_connector.py` | **Done** | Records mic audio, transcribes with Whisper, checks speaker identity (cosine), stores as `voice_note` or `voice_ambient`. Three guards: noise gate (>60% silence), min 4 words, speaker ID threshold 0.3. |
+| `connectors/registry.py` | **Done** | `get_connectors()` factory; `ALL_CONNECTORS` = `[GitConnector, ClaudeConnector]`. |
+| `connectors/git_connector.py` | **Done** | Fetches commit subject + body, embeds `subject+body[:512]`, stores full body in `raw_text`. Docs importance 0.5. |
+| `connectors/claude_connector.py` | **Done** | Indexes `~/.claude/projects/**/*.jsonl` assistant responses (>= 150 chars). Repo from `cwd`. 89 memories on first run. |
+| `connectors/voice_connector.py` | **Done** | Records mic audio, transcribes with Whisper, checks speaker identity (cosine), stores as `voice_note` or `voice_ambient`. |
+| `mcp_server/server.py` | **Done** | FastMCP entrypoint, stdio transport, registered with Claude Code via `claude mcp add`. |
+| `mcp_server/tools.py` | **Done** | `search_memories`, `build_context`, `remember_memory` — full docstrings, confirmed working via `/mcp`. |
+| `scripts/reset_importance.py` | **Done** | Clamps drifted importance values back to 0.8. `--dry-run` supported. |
 | `daemon/scheduler.py` | **Done** | `run_daemon(interval)` loop — calls all connectors, prunes daily, logs counts. |
 | `daemon/jobs/memory_cleanup.py` | **Done** | `prune_memories()` — removes importance < 0.05 OR (age > 90 days AND importance < 0.15). |
 | `daemon/jobs/importance_decay.py` | **Done** | `decay_importance(factor=0.99)` — daily decay on all non-pinned memories. |
@@ -47,21 +57,16 @@
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
 
 **What's empty / partially implemented:**
-- `api/` — routes directory present but empty (no FastAPI route implementations yet).
-- `connectors/` — voice connector done; all other connectors (git, terminal, filesystem, markdown, claude, copilot, browser) are Phase 2 TODO.
+- `api/` — routes directory present but empty (Phase 4B, not yet started).
+- `connectors/` — git + claude + voice done. Terminal, filesystem, markdown, copilot, browser are TODO.
 - `daemon/watcher.py` — filesystem watcher not yet implemented.
-- `core/privacy.py` — redaction filter not yet implemented.
 - `core/tests/try_queries.py` — broken; uses removed legacy functions (`save_memory`, `search_memory`).
 
-**What's next (revised priority — voice query + agent querying tracks):**
-1. **Phase 3.A** — `devmemory context` command: `ContextEngine` is done, just wire the CLI (1 hour)
-2. **Phase 3.B** — `devmemory suggest` command: `git diff HEAD` → `ContextEngine.build()` → print context (2 hours, no new deps)
-3. **Phase 3.C** — Enhanced `search --voice`: confirmation display, 8s recording, quality gate, `--speak` flag
-4. **Phase 4A** — MCP Server: `memory_search`, `memory_context`, `memory_remember` tools for Claude Code (primary agent interface)
-5. **Phase 2 (reordered)** — Claude Code Connector first (past solutions = highest-value memories), then terminal, markdown, filesystem
-6. **Phase 5.A** — Intent Classifier: rule-based keyword routing (debug/architecture/implementation/recall) into `ContextEngine`
-7. **Phase 4B** — REST API: external agent interface (CI/CD webhooks, cross-machine access)
-8. **Phase 5.B–D** — Context caching, dedup job, related memories
+**What's next:**
+1. **Phase 2 (Terminal)** — Terminal connector: index `~/.zsh_history` / `~/.bash_history`
+2. **Phase 5.A** — Intent Classifier: rule-based keyword routing into `ContextEngine`
+3. **Phase 2 (Markdown)** — Markdown/Obsidian connector
+4. **Phase 4B** — REST API: external agent interface (CI/CD webhooks, cross-machine access)
 
 ---
 
