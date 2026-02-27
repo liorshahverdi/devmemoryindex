@@ -121,8 +121,8 @@ class TestComputeScore:
         similarity 0.0) and missing importance (defaults to 0.5)."""
         result = {"timestamp": datetime.utcnow()}
         score = compute_score(result)
-        # similarity=0, importance=0.5 → 0*0.6 + 0.5*0.25 + ~1*0.15 = ~0.275
-        assert 0.2 < score < 0.4
+        # similarity=0, importance=0.5 → 0*0.75 + 0.5*0.15 + ~1*0.10 = ~0.175
+        assert 0.15 < score < 0.30
 
     def test_ranking_order_matches_intuition(self):
         """Sort a batch of results by compute_score and verify the order

@@ -37,9 +37,10 @@ def remove_repo(
 
 @app.command("list")
 def list_config():
-    """Show all configured paths."""
+    """Show all configured paths and connector schedules."""
     git_paths = cfg.get_git_paths()
     md_dirs = cfg.get_markdown_dirs()
+    intervals = cfg.get_all_intervals()
 
     if not git_paths and not md_dirs:
         console.print(
@@ -47,7 +48,6 @@ def list_config():
             "Run [bold]devmemory config add <path>[/bold] to track a git repo, or\n"
             "[bold]devmemory config add-notes <dir>[/bold] to scan a notes directory."
         )
-        return
 
     if git_paths:
         table = Table(title="Tracked Git Repos")
@@ -64,6 +64,32 @@ def list_config():
         for i, p in enumerate(md_dirs, 1):
             table.add_row(str(i), p)
         console.print(table)
+
+    sched_table = Table(title="Connector Schedules")
+    sched_table.add_column("Connector", style="bold")
+    sched_table.add_column("Interval", style="cyan")
+    for name, secs in intervals.items():
+        sched_table.add_row(name, _fmt_interval(secs))
+    console.print(sched_table)
+
+
+@app.command("set-schedule")
+def set_schedule(
+    connector: str = typer.Argument(..., help="Connector name: git, claude, terminal, markdown"),
+    seconds: int = typer.Argument(..., help="Ingest interval in seconds"),
+):
+    """Set how often a connector ingests (e.g. devmemory config set-schedule git 300)."""
+    if connector not in cfg.CONNECTOR_NAMES:
+        console.print(
+            f"[red]Unknown connector '{connector}'.[/red] "
+            f"Valid: {', '.join(cfg.CONNECTOR_NAMES)}"
+        )
+        raise typer.Exit(1)
+    if seconds < 30:
+        console.print("[red]Minimum interval is 30 seconds.[/red]")
+        raise typer.Exit(1)
+    cfg.set_connector_interval(connector, seconds)
+    console.print(f"[green]{connector}[/green] interval set to [cyan]{_fmt_interval(seconds)}[/cyan]")
 
 
 @app.command("add-notes")
@@ -121,6 +147,18 @@ def scan(
             console.print(f"  [dim]already tracked[/dim]  {repo_str}")
 
     console.print(f"\n[green]Done. {added} new repo(s) added.[/green]")
+
+
+def _fmt_interval(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        m = seconds // 60
+        s = seconds % 60
+        return f"{m}m {s}s" if s else f"{m}m"
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    return f"{h}h {m}m" if m else f"{h}h"
 
 
 def _find_git_repos(root: Path, max_depth: int, _depth: int = 0) -> list[Path]:

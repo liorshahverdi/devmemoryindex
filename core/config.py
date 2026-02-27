@@ -15,6 +15,12 @@ Example:
         "/Users/you/notes",
         "/Users/you/obsidian-vault",
     ]
+
+    [schedule]
+    git = 600
+    claude = 300
+    terminal = 3600
+    markdown = 1800
 """
 
 import tomllib
@@ -36,7 +42,7 @@ def save(data: dict) -> None:
 
 
 def _to_toml(data: dict) -> str:
-    """Minimal TOML serializer for string/list-of-strings structures."""
+    """Minimal TOML serializer for string/int/list-of-strings structures."""
     lines = []
     for section, values in data.items():
         lines.append(f"[{section}]")
@@ -47,6 +53,8 @@ def _to_toml(data: dict) -> str:
                 else:
                     items = "\n".join(f'    "{v}",' for v in val)
                     lines.append(f"{key} = [\n{items}\n]")
+            elif isinstance(val, int):
+                lines.append(f"{key} = {val}")
             else:
                 lines.append(f'{key} = "{val}"')
         lines.append("")
@@ -111,3 +119,33 @@ def remove_markdown_dir(path: str) -> bool:
     data["markdown"]["scan_dirs"] = dirs
     save(data)
     return True
+
+
+# ── Schedule helpers ──────────────────────────────────────────────────
+
+_DEFAULT_INTERVALS: dict[str, int] = {
+    "git": 600,       # 10 min
+    "claude": 300,    # 5 min
+    "terminal": 3600, # 1 hour
+    "markdown": 1800, # 30 min
+}
+
+CONNECTOR_NAMES = list(_DEFAULT_INTERVALS.keys())
+
+
+def get_connector_interval(name: str) -> int:
+    """Return the ingest interval (seconds) for a connector, with defaults."""
+    return load().get("schedule", {}).get(name, _DEFAULT_INTERVALS.get(name, 600))
+
+
+def set_connector_interval(name: str, seconds: int) -> None:
+    """Persist a per-connector ingest interval to config."""
+    data = load()
+    data.setdefault("schedule", {})[name] = seconds
+    save(data)
+
+
+def get_all_intervals() -> dict[str, int]:
+    """Return {connector: interval_seconds} for all known connectors."""
+    stored = load().get("schedule", {})
+    return {name: stored.get(name, default) for name, default in _DEFAULT_INTERVALS.items()}

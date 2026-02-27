@@ -39,10 +39,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Order matters: literal routes must be registered before /{memory_id} wildcard
 app.include_router(search_router, prefix="/memory", tags=["search"])
-app.include_router(memory_router, prefix="/memory", tags=["memory"])
 app.include_router(context_router, prefix="/memory", tags=["context"])
 app.include_router(webhook_router, prefix="/memory", tags=["webhook"])
+app.include_router(memory_router, prefix="/memory", tags=["memory"])  # /{memory_id} last
 
 
 def start_server(host: str = "127.0.0.1", port: int = 7711, reload: bool = False):
