@@ -118,3 +118,32 @@ class MemoryStore:
 
     def get_all(self) -> list:
         return self.collection.to_arrow().to_pylist()
+
+    def truncate(self, dry_run: bool = True, filter_repo: str | None = None) -> int:
+        """Remove records from the store.
+
+        - If `filter_repo` is provided, only records whose `repo` equals that value
+          will be removed.
+        - By default this is a dry-run and returns the number of records that
+          would be deleted. Set `dry_run=False` to actually perform deletions.
+        """
+        all_records = self.get_all()
+        to_delete = []
+        for r in all_records:
+            if filter_repo is not None and r.get("repo") != filter_repo:
+                continue
+            to_delete.append(r["id"])
+
+        if dry_run:
+            return len(to_delete)
+
+        deleted = 0
+        for mem_id in to_delete:
+            try:
+                self.delete(mem_id)
+                deleted += 1
+            except Exception:
+                # keep going on errors to avoid partial failures blocking the whole operation
+                pass
+
+        return deleted

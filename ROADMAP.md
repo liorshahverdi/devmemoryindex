@@ -14,27 +14,49 @@
 |---|---|---|
 | `core/schema.py` — Memory dataclass | **Done** | id, type, summary, raw_text, source, repo, timestamp, tags, importance |
 | `core/embeddings.py` — BAAI/bge-small-en (384d) | **Done** | `embed()` and `embed_batch()` working |
-| `core/memory_store.py` — MemoryStore class | **Done** | `add()`, `semantic_search()`, `hybrid_search()`, `delete()`, `count()`, `get_all()`. Uses `compute_score` from ranking module. |
+| `core/memory_store.py` — MemoryStore class | **Done** | `add()`, `semantic_search()`, `hybrid_search()`, `delete()`, `count()`, `get_all()`, `exists()`, `reinforce()`, `truncate()`. Uses `compute_score` from ranking module. |
 | `core/store_provider.py` — Singleton factory | **Done** | `get_store()` returns shared `MemoryStore` instance |
 | `core/ranking.py` — Scoring formula | **Done** | `recency_score()`, `compute_score()` — weights: similarity 0.6, importance 0.25, recency 0.15 |
-| `core/tests/test_schema.py` | **Done** | Memory creation, field validation, default importance |
-| `core/tests/test_memory_store.py` | **1 Failing** | 3 tests; `test_add_memory` fails because `get_all()` calls `.to_pandas()` and `pandas` is not installed. Other 2 pass. |
+| `core/speaker_profile.py` — Speaker identity | **Done** | `enroll()`, `load_profile()`, `is_self()` — cosine distance on pyannote embeddings, threshold 0.3 |
+| `core/token_budget.py` — Token estimation | **Done** | `estimate_tokens()`, `pack_within_budget()` — enforces max_tokens and max_items limits. |
+| `core/context_engine.py` — ContextEngine class | **Partial** | `build()` structure implemented (hybrid search → repo filter → dedup → token pack → format). Remaining: `core/tests/test_context_engine.py` (4 tests not yet written). |
+| `core/tests/test_schema.py` | **Done** | 2 tests — Memory creation, field validation, default importance. All passing. |
+| `core/tests/test_memory_store.py` | **Done** | 3 tests — all passing. |
 | `core/tests/test_ranking.py` | **Done** | 11 tests — recency decay, score formula, ranking order. All passing. |
 | `core/tests/test_hybrid_search.py` | **Done** | 5 tests — keyword surfacing, deduplication, hybrid-vs-semantic, importance ranking, k limit. All passing. |
 | `core/tests/try_queries.py` | **Broken** | Still uses removed legacy functions (`save_memory`, `search_memory`). Needs migration to `MemoryStore`. |
-| `cli/main.py` — Typer entrypoint | **Done** | Registers `search`, `add`, `stats` commands. `devmemory` CLI works. |
+| `cli/main.py` — Typer entrypoint | **Done** | Registers `search`, `add`, `stats`, `prune`, `dictate`, `voice` commands. `devmemory` CLI works. |
 | `cli/commands/search.py` | **Done** | Upgraded to `hybrid_search()`. Supports `--type` and `--repo` filters. |
 | `cli/commands/add.py` | **Done** | Manual memory insertion via CLI. |
 | `cli/commands/stats.py` | **Done** | Shows total count and type breakdown (uses `to_arrow()` instead of `to_pandas()`). |
-| `core/context_engine.py` — ContextEngine class | **Partial** | `build()` structure, `token_budget.py`, `context_engine.py` file created. Remaining: full `ContextEngine` implementation per Phase 1.6 spec, and `core/tests/test_context_engine.py` (4 tests not yet written). |
-| `core/token_budget.py` — Token estimation | **Done** | `estimate_tokens()`, `pack_within_budget()` — enforces max_tokens and max_items limits. |
-| `pyproject.toml` | **Done** | `[project.scripts]` registered, hatchling build, dev deps configured. |
-| Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/` directories created |
+| `cli/commands/prune.py` | **Done** | `devmemory prune` — deletes memories below importance floor or over age+importance threshold. |
+| `cli/commands/dictate.py` | **Done** | `devmemory dictate` — record 5–60s, transcribe via Whisper, auto-index as voice_note. Noise gate + min-word guard. |
+| `cli/commands/enroll.py` | **Done** | `devmemory voice enroll` — capture 30s voiceprint and save speaker profile for identity matching. |
+| `connectors/base.py` — Abstract Connector | **Done** | Abstract `Connector` class with `collect()` method and shared store access. |
+| `connectors/registry.py` | **Done** | `get_connectors()` factory; `ALL_CONNECTORS` list (currently empty — Phase 2 connectors not yet implemented). |
+| `connectors/voice_connector.py` | **Done** | Records mic audio, transcribes with Whisper, checks speaker identity (cosine), stores as `voice_note` or `voice_ambient`. Three guards: noise gate (>60% silence), min 4 words, speaker ID threshold 0.3. |
+| `daemon/scheduler.py` | **Done** | `run_daemon(interval)` loop — calls all connectors, prunes daily, logs counts. |
+| `daemon/jobs/memory_cleanup.py` | **Done** | `prune_memories()` — removes importance < 0.05 OR (age > 90 days AND importance < 0.15). |
+| `daemon/jobs/importance_decay.py` | **Done** | `decay_importance(factor=0.99)` — daily decay on all non-pinned memories. |
+| `scripts/truncate_memories.py` | **Done** | Standalone bulk-delete CLI with `--filter-repo`, `--dry-run`, `--yes` confirmation. |
+| `pyproject.toml` | **Done** | `[project.scripts]` registered, hatchling build, dev deps + `[voice]` optional extras configured. |
+| Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/`, `scripts/` directories |
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
 
-**What's empty:** `connectors/`, `api/`, `daemon/` — all currently have no implementation files.
+**What's empty / partially implemented:**
+- `api/` — routes directory present but empty (no FastAPI route implementations yet).
+- `connectors/` — voice connector done; all other connectors (git, terminal, filesystem, markdown, claude, copilot, browser) are Phase 2 TODO.
+- `core/context_engine.py` — `build()` implemented but `core/tests/test_context_engine.py` not yet written (4 tests needed).
+- `daemon/watcher.py` — filesystem watcher not yet implemented.
+- `core/privacy.py` — redaction filter not yet implemented.
 
-**What's next:** Phase 1.7 (`store.exists()` for deduplication), tests for `ContextEngine`, then Phase 2 (connectors).
+**What's next:**
+- Write `core/tests/test_context_engine.py` (4 tests: build context, token budget truncation, repo filter, format modes).
+- Migrate `core/tests/try_queries.py` to use `MemoryStore` (remove legacy function calls).
+- Phase 1.8: implement `core/privacy.py` (regex-based redaction of API keys, tokens, PII).
+- Phase 2: implement connectors (git, terminal, filesystem, markdown, claude, copilot, browser) and wire into daemon.
+- Phase 4: FastAPI server + routes (search, memory, context, webhook).
+- Phase 5.2: filesystem watcher (`daemon/watcher.py`) using `watchdog`.
 
 ---
 
@@ -608,9 +630,9 @@ def pack_within_budget(
 
 ---
 
-### 1.7 Content Hashing for Incremental Indexing
+### 1.7 Content Hashing for Incremental Indexing ✅
 
-**Status: PENDING** — `store.exists()` not yet implemented. Required before Phase 2 connectors can deduplicate.
+**Status: COMPLETED** — `store.exists()` implemented in `core/memory_store.py`. Connectors can now deduplicate before inserting.
 
 **Why:** Without this, re-running connectors re-embeds everything, which is slow and creates duplicates.
 
@@ -633,7 +655,7 @@ def exists(self, memory_id: str) -> bool:
 
 ### 1.8 Privacy / Redaction Filter
 
-**Status: PENDING** — Depends on Phase 1.7.
+**Status: PENDING** — Phase 1.7 complete; this is the next unblocked item.
 
 **Why:** Connectors ingest raw text from history files, code, and notes. Without redaction, secrets (API keys, tokens, passwords) and PII can be stored in plaintext inside LanceDB.
 
@@ -685,13 +707,15 @@ memory = Memory(
 
 ## Phase 2 — Connectors (Memory Ingestion)
 
-> **Status: NOT STARTED** — `connectors/` directory is empty. Blocked on Phase 1.7 (`store.exists()`).
+> **Status: IN PROGRESS** — Voice connector (2.9) done. Base class and registry scaffolded. Remaining connectors (git, terminal, filesystem, markdown, claude, copilot, browser) are next. Phase 1.7 (`store.exists()`) complete — connectors can now deduplicate.
 >
 > **Goal:** DevMemoryIndex automatically captures developer knowledge from
 > six sources. Each connector inherits from a base class, creates Memory objects,
 > embeds them, and saves them through MemoryStore.
 
-### 2.1 Connector Base Class
+### 2.1 Connector Base Class ✅
+
+**Status: COMPLETED**
 
 **File:** `connectors/base.py`
 
@@ -716,7 +740,9 @@ class Connector(ABC):
 
 ---
 
-### 2.2 Connector Registry
+### 2.2 Connector Registry ✅
+
+**Status: COMPLETED** — Registry scaffolded with `get_connectors()` and `ALL_CONNECTORS` list. Connectors will be added as they are implemented in 2.3–2.10.
 
 **File:** `connectors/registry.py`
 
@@ -1369,7 +1395,9 @@ class CopilotConnector(Connector):
 
 ---
 
-### 2.9 Voice Connector
+### 2.9 Voice Connector ✅
+
+**Status: COMPLETED** — Full implementation working with speaker identification, noise gate, and min-word guards. `devmemory dictate` and `devmemory voice enroll` both working.
 
 **File:** `connectors/voice_connector.py`
 
@@ -1525,10 +1553,12 @@ Use `small` for developer dictation — technical vocabulary benefits from the l
 
 ### 2.9b Meeting Connector + Speaker Identification
 
+**Status: PARTIAL** — `core/speaker_profile.py` (enroll/load/identify) and `cli/commands/enroll.py` are done. Speaker ID integrated into `voice_connector.py`. `connectors/meeting_connector.py` (batch file processing) not yet implemented.
+
 **Files:**
-- `connectors/meeting_connector.py` — ingest a meeting audio file, diarize, identify speakers, store per-speaker memories
-- `core/speaker_profile.py` — enroll your voice once; load profile; cosine-similarity identification
-- `cli/commands/enroll.py` — `devmemory voice enroll`
+- `connectors/meeting_connector.py` — ingest a meeting audio file, diarize, identify speakers, store per-speaker memories *(TODO)*
+- `core/speaker_profile.py` — enroll your voice once; load profile; cosine-similarity identification ✅
+- `cli/commands/enroll.py` — `devmemory voice enroll` ✅
 
 **Purpose:** Auto-index audio from recorded work meetings (Zoom, Teams, Google Meet local exports). Segments the audio by speaker turn, identifies which speaker is *you* using a stored voiceprint, and stores two classes of memory:
 - `meeting_self` — things **you** said (higher importance, fully indexed)
@@ -3086,7 +3116,9 @@ curl -X POST "http://localhost:7711/memory/ingest" \
 > **Goal:** Memories appear automatically without running manual commands.
 > The daemon runs connectors on a schedule and watches for filesystem changes.
 
-### 5.1 Scheduler
+### 5.1 Scheduler ✅
+
+**Status: COMPLETED** — `run_daemon()` loop implemented with connector dispatch, per-cycle counts, and daily pruning trigger.
 
 **File:** `daemon/scheduler.py`
 
@@ -3147,7 +3179,9 @@ def start_watcher(path: str = "."):
     return observer
 ```
 
-### 5.3 Importance Decay Job
+### 5.3 Importance Decay Job ✅
+
+**Status: COMPLETED** — `decay_importance(factor=0.99)` implemented in `daemon/jobs/importance_decay.py`. Skips pinned memories. Called daily by scheduler.
 
 **File:** `daemon/jobs/importance_decay.py`
 
@@ -3172,9 +3206,9 @@ def decay_importance(factor: float = 0.99):
 
 ---
 
-### 5.4 Access Reinforcement + Memory Pruning
+### 5.4 Access Reinforcement + Memory Pruning ✅
 
-**Status: PENDING** — Depends on Phase 5.3 (decay) and Phase 1.5 (search methods).
+**Status: COMPLETED** — `MemoryStore.reinforce()` implemented and called automatically after every search. `daemon/jobs/memory_cleanup.py` prunes by importance floor and age. `devmemory prune` CLI command wired.
 
 This phase pulls Phase 6.1 (Importance Reinforcement) forward because the pruning system must be aware of access patterns. A memory queried yesterday should not be pruned, even if it is old.
 
