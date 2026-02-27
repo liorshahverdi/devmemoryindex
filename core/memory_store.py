@@ -25,7 +25,10 @@ class MemoryStore:
     def _init_table(self):
         return self.db.create_table("memories", schema=_schema, exist_ok=True)
     
-    def add(self, memory: Memory, vector: list):
+    def add(self, memory: Memory, vector: list) -> bool:
+        """Insert a memory. Returns False (no-op) if the id already exists."""
+        if self.exists(memory.id):
+            return False
         self.collection.add([{
             "id": memory.id,
             "type": memory.type,
@@ -38,6 +41,7 @@ class MemoryStore:
             "importance": memory.importance,
             "vector": vector
         }])
+        return True
 
     def exists(self, memory_id: str) -> bool:
         try:

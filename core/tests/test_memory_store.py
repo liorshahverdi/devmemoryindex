@@ -56,6 +56,16 @@ def test_add_and_search_memory(store, sample_memory, sample_vector):
     assert results[0]["importance"] == pytest.approx(0.8)
 
 
+def test_add_deduplicates_on_same_id(store, sample_memory, sample_vector):
+    """Adding the same memory id twice must not create a duplicate row."""
+    first = store.add(sample_memory, sample_vector)
+    second = store.add(sample_memory, sample_vector)
+
+    assert first is True, "First insert should return True"
+    assert second is False, "Second insert with same id should return False (no-op)"
+    assert store.count() == 1, "Store must contain exactly one row after duplicate add"
+
+
 def test_search_multiple_memories(store, sample_vector):
     """Test searching across multiple saved memories returns ranked results."""
     memories = [

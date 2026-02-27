@@ -17,9 +17,12 @@
 | `core/memory_store.py` — MemoryStore class | **Done** | `add()`, `semantic_search()`, `hybrid_search()`, `delete()`, `count()`, `get_all()`, `exists()`, `reinforce()`, `truncate()`. Uses `compute_score` from ranking module. |
 | `core/store_provider.py` — Singleton factory | **Done** | `get_store()` returns shared `MemoryStore` instance |
 | `core/ranking.py` — Scoring formula | **Done** | `recency_score()`, `compute_score()` — weights: similarity 0.6, importance 0.25, recency 0.15 |
+| `core/privacy.py` — Redaction filter | **Done** | `redact()` — strips API keys, bearer tokens, base64 blobs, SSNs, emails. Hooked into `connectors/base.py` via `_redact()`. |
+| `core/tests/test_privacy.py` | **Done** | 4 tests — API key redaction, bearer token strip, clean text passthrough, end-to-end store test. All passing. |
 | `core/speaker_profile.py` — Speaker identity | **Done** | `enroll()`, `load_profile()`, `is_self()` — cosine distance on pyannote embeddings, threshold 0.3 |
 | `core/token_budget.py` — Token estimation | **Done** | `estimate_tokens()`, `pack_within_budget()` — enforces max_tokens and max_items limits. |
-| `core/context_engine.py` — ContextEngine class | **Partial** | `build()` structure implemented (hybrid search → repo filter → dedup → token pack → format). Remaining: `core/tests/test_context_engine.py` (4 tests not yet written). |
+| `core/context_engine.py` — ContextEngine class | **Done** | `build()`, `_deduplicate()`, `_format()` fully implemented. |
+| `core/tests/test_context_engine.py` | **Done** | 4 tests — build context, token budget truncation, repo filter, format modes. All passing. |
 | `core/tests/test_schema.py` | **Done** | 2 tests — Memory creation, field validation, default importance. All passing. |
 | `core/tests/test_memory_store.py` | **Done** | 3 tests — all passing. |
 | `core/tests/test_ranking.py` | **Done** | 11 tests — recency decay, score formula, ranking order. All passing. |
@@ -46,14 +49,12 @@
 **What's empty / partially implemented:**
 - `api/` — routes directory present but empty (no FastAPI route implementations yet).
 - `connectors/` — voice connector done; all other connectors (git, terminal, filesystem, markdown, claude, copilot, browser) are Phase 2 TODO.
-- `core/context_engine.py` — `build()` implemented but `core/tests/test_context_engine.py` not yet written (4 tests needed).
 - `daemon/watcher.py` — filesystem watcher not yet implemented.
 - `core/privacy.py` — redaction filter not yet implemented.
+- `core/tests/try_queries.py` — broken; uses removed legacy functions (`save_memory`, `search_memory`).
 
 **What's next:**
-- Write `core/tests/test_context_engine.py` (4 tests: build context, token budget truncation, repo filter, format modes).
 - Migrate `core/tests/try_queries.py` to use `MemoryStore` (remove legacy function calls).
-- Phase 1.8: implement `core/privacy.py` (regex-based redaction of API keys, tokens, PII).
 - Phase 2: implement connectors (git, terminal, filesystem, markdown, claude, copilot, browser) and wire into daemon.
 - Phase 4: FastAPI server + routes (search, memory, context, webhook).
 - Phase 5.2: filesystem watcher (`daemon/watcher.py`) using `watchdog`.
@@ -161,9 +162,6 @@ The `MemoryStore` class now has all required methods:
 - `get_all()` — dump all records (debugging)
 
 Legacy global functions (`save_memory`, `search_memory`, `_get_collection`) have been removed. Tests in `test_memory_store.py` have been rewritten to use the class directly with `tmp_path` isolation (3 tests, all passing).
-
-**Remaining cleanup:** `core/tests/try_queries.py` still references the removed legacy functions and will fail if run. It needs to be migrated to use `MemoryStore`.
-
 ---
 
 ### 1.2 Create Store Provider (singleton) ✅
@@ -183,7 +181,7 @@ Implemented as designed — `get_store(db_path)` returns a singleton `MemoryStor
 All 6 files created and working:
 - `cli/__init__.py`, `cli/commands/__init__.py` — package inits
 - `cli/main.py` — Typer entrypoint registering `search`, `add`, `stats`
-- `cli/commands/search.py` — search memories (currently uses `semantic_search()`, upgrade to `hybrid_search()` pending)
+- `cli/commands/search.py` — search memories (uses `hybrid_search()`)
 - `cli/commands/add.py` — manual memory insertion
 - `cli/commands/stats.py` — memory store statistics (adapted to use `to_arrow()` instead of `to_pandas()`)
 
@@ -249,8 +247,6 @@ Then run `uv pip install -e .` so the `devmemory` command is available in your s
 ---
 
 **Step 4 — Search command:** `cli/commands/search.py`
-
-> **Note:** Uses `semantic_search()` for now. After Phase 1.5 (hybrid search), update this to call `hybrid_search()` instead.
 
 ```python
 import typer
@@ -483,17 +479,18 @@ def hybrid_search(self, query: str, vector: list, k: int = 5) -> list:
 </details>
 
 ---
-### 1.6 Implement Context Engine ⚠️
+### 1.6 Implement Context Engine ✅
 
-**Status: PARTIALLY COMPLETE**
+**Status: COMPLETED**
 
 **What is done:**
-- `core/context_engine.py` file created with `ContextEngine.build()` structure (hybrid search → repo filter → dedup → token packing → format).
+- `core/context_engine.py` — `ContextEngine` class fully implemented: `build()`, `_deduplicate()`, `_format()`.
 - `core/token_budget.py` — `estimate_tokens()` and `pack_within_budget()` implemented.
-
-**What remains:**
-- Full implementation of `ContextEngine` class matching the spec below (the spec is the target state, not the current implementation).
-- `core/tests/test_context_engine.py` — 4 tests not yet written (build context for known query, token budget truncation, repo filter, format modes).
+- `core/tests/test_context_engine.py` — 4 tests, all passing:
+  - Build context for a known query — output contains expected memory.
+  - Token budget truncation — fewer memories returned when budget is tight.
+  - Repo filter — only memories from specified repo appear.
+  - All three format modes ("raw", "claude", "markdown") produce valid structured output.
 
 **File:** `core/context_engine.py`
 
@@ -622,9 +619,9 @@ def pack_within_budget(
 - `core/context_engine.py` — `ContextEngine.build()` implemented: hybrid search → repo filter → `_deduplicate()` (prefix key on first 100 chars) → `pack_within_budget()` → `_format()`. Returns dict with `query`, `memories`, `context_text`, `token_estimate`, `memory_count`.
 - `core/token_budget.py` — `estimate_tokens()` (word count) and `pack_within_budget()` implemented. `METADATA_OVERHEAD = 20` tokens per memory.
 
-**Remaining:** `core/tests/test_context_engine.py` not yet written. Tests needed:
-- Build context for a known query — verify output contains expected memories.
-- Token budget respected (insert 50 memories, set max_tokens=200, verify truncation).
+**Tests:** `core/tests/test_context_engine.py` — 4 tests, all passing:
+- Build context for a known query — output contains expected memory.
+- Token budget truncation — fewer memories returned when budget is tight.
 - Repo filter — only memories from specified repo appear.
 - Each format mode ("raw", "claude", "markdown") produces valid output.
 
@@ -653,9 +650,9 @@ def exists(self, memory_id: str) -> bool:
 
 ---
 
-### 1.8 Privacy / Redaction Filter
+### 1.8 Privacy / Redaction Filter ✅
 
-**Status: PENDING** — Phase 1.7 complete; this is the next unblocked item.
+**Status: COMPLETED** — `core/privacy.py` implemented and hooked into `connectors/base.py`. 4 tests passing.
 
 **Why:** Connectors ingest raw text from history files, code, and notes. Without redaction, secrets (API keys, tokens, passwords) and PII can be stored in plaintext inside LanceDB.
 
