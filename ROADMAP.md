@@ -53,31 +53,55 @@
 - `core/privacy.py` — redaction filter not yet implemented.
 - `core/tests/try_queries.py` — broken; uses removed legacy functions (`save_memory`, `search_memory`).
 
-**What's next:**
-- Migrate `core/tests/try_queries.py` to use `MemoryStore` (remove legacy function calls).
-- Phase 2: implement connectors (git, terminal, filesystem, markdown, claude, copilot, browser) and wire into daemon.
-- Phase 4: FastAPI server + routes (search, memory, context, webhook).
-- Phase 5.2: filesystem watcher (`daemon/watcher.py`) using `watchdog`.
+**What's next (revised priority — voice query + agent querying tracks):**
+1. **Phase 3.A** — `devmemory context` command: `ContextEngine` is done, just wire the CLI (1 hour)
+2. **Phase 3.B** — `devmemory suggest` command: `git diff HEAD` → `ContextEngine.build()` → print context (2 hours, no new deps)
+3. **Phase 3.C** — Enhanced `search --voice`: confirmation display, 8s recording, quality gate, `--speak` flag
+4. **Phase 4A** — MCP Server: `memory_search`, `memory_context`, `memory_remember` tools for Claude Code (primary agent interface)
+5. **Phase 2 (reordered)** — Claude Code Connector first (past solutions = highest-value memories), then terminal, markdown, filesystem
+6. **Phase 5.A** — Intent Classifier: rule-based keyword routing (debug/architecture/implementation/recall) into `ContextEngine`
+7. **Phase 4B** — REST API: external agent interface (CI/CD webhooks, cross-machine access)
+8. **Phase 5.B–D** — Context caching, dedup job, related memories
 
 ---
 
 ## Target Architecture
 
+Two query tracks, one shared core:
+
 ```
-                    ┌──────────────────────┐
-                    │      CONNECTORS      │
-                    │  git · terminal ·    │
-                    │  files · notes ·     │
-                    │  claude · copilot    │
-                    └──────────┬───────────┘
-                               │
-                        MemoryStore (core)
-                     add / search / rank
-                               │
-        ┌──────────┬───────────┼───────────┬──────────┐
-        │          │           │           │          │
-       CLI        API        Daemon     Context    Tests
-     (human)   (agents)   (background)  Engine
+VOICE QUERY TRACK (Human)           AGENT QUERY TRACK (AI)
+─────────────────────────           ──────────────────────
+speak → Whisper STT (local)         Claude Code tool call
+  ↓                                   ↓
+classify_intent() [rule-based]      MCP Server (Phase 4A)
+  ↓                                 (stdio, no HTTP needed)
+hybrid_search + ContextEngine         ↓
+  ↓                                 hybrid_search + ContextEngine
+confirm: "Searching for: X"           ↓
+  ↓                                 returns list[dict] or claude XML
+optional: say() top result
+
+              SHARED CORE
+         MemoryStore (LanceDB)
+       hybrid_search + ranking
+        ContextEngine.build()
+         token_budget packing
+             privacy.redact()
+
+CONNECTORS (background)          REST API (Phase 4B — external)
+──────────────────────           ──────────────────────────────
+GitConnector ✅                  POST /memory/search
+ClaudeConnector (next)           GET  /memory/context
+TerminalConnector                POST /memory/remember
+MarkdownConnector                POST /memory/ingest (CI/CD)
+FilesystemConnector              GET  /memory/context/stream
+
+DAEMON ✅                        CLI (Human)
+──────                           ───────────
+scheduler.py                     context, suggest, search --voice
+importance_decay.py              ingest, dictate, voice enroll
+memory_cleanup.py                add, stats, prune, config
 ```
 
 ### Target Repo Structure
@@ -2260,9 +2284,51 @@ class BrowserConnector(Connector):
 
 ---
 
-## Phase 3 — CLI (Human Interface)
+## Phase 3 — CLI Completions (Human Interface)
 
-> **Status: PARTIALLY DONE** — `search`, `add`, `stats` complete. `context` command unblocked (Phase 1.6 done). `ingest` blocked on Phase 2. `daemon` blocked on Phase 5.
+> **Status: PARTIALLY DONE** — `search` (inc. `--voice`, `--speak`), `add`, `stats`, `prune`, `dictate`, `voice enroll`, `ingest`, `config`, `context`, `suggest` complete. Next: 3.D (`repl`, `export`/`import`, `daemon`).
+>
+> **Revised subphase structure:**
+> - **3.A** — `devmemory context`: wrap `ContextEngine.build()` as CLI command. Zero new architecture.
+> - **3.B** — `devmemory suggest`: `git diff HEAD` → `ContextEngine.build()` → print context. Pulled forward from Phase 6.5 — all deps are done.
+> - **3.C** — Enhanced `search --voice`: 8s recording, quality gate (`no_speech_prob`), confirmation display, optional `--speak` flag (macOS `say` / `espeak`).
+> - **3.D** — Remaining specced commands: `repl`, `export`/`import`, `daemon`. Defer: `tag`, `pin`, `audit`.
+>
+> **`devmemory suggest` design** (`cli/commands/suggest.py`):
+> ```
+> devmemory suggest                  # git diff HEAD → ContextEngine → print
+> devmemory suggest --staged         # git diff --cached
+> devmemory suggest --format claude  # wrap in <context> tags
+> devmemory suggest --copy           # also pipe to clipboard
+> devmemory suggest --repo myapp     # filter context to one repo
+> ```
+> Falls back to `git log -5 --pretty=%s` if no diff exists.
+>
+> **When and why to use `suggest`:**
+> The key difference from `devmemory context` is **no query required**. Instead of
+> asking "what do I need?", you run `suggest` mid-feature and it infers what's
+> relevant from your current working tree changes.
+>
+> Typical workflow:
+> 1. You're mid-feature, hit a wall, or are about to write something non-trivial
+> 2. Run `devmemory suggest` — no typing a query
+> 3. It reads your current diff, extracts changed file names + added lines as a query
+> 4. Surfaces past solutions, prior decisions, bugs you've hit in similar files
+>
+> It gets more useful as more connectors feed data in (git history, terminal,
+> markdown notes). With only the git connector active, results are sparse until
+> a meaningful commit history is indexed. Once terminal + markdown connectors
+> exist, `suggest` becomes a zero-friction "what do I already know about this?"
+> before writing new code.
+>
+> **Enhanced voice search design** (`cli/commands/search.py`):
+> 1. Show "Listening..." with countdown
+> 2. Record 8s (not 5s — natural queries take longer)
+> 3. Quality gate: if avg `no_speech_prob > 0.5` → print "Could not understand" and exit
+> 4. **Confirmation step**: print `Searching for: "<transcribed text>"` before results appear
+> 5. Run `classify_intent()` (after Phase 5.A) to route query type
+> 6. Show results table as normal
+> 7. `--speak` flag: `say results[0]["summary"][:100]` for full voice loop (no cloud TTS)
 >
 > **Goal:** A developer can operate DevMemoryIndex entirely from the terminal,
 > like using `git` — no Python scripts needed.
@@ -2850,12 +2916,194 @@ devmemory prune --floor 0.1 --age 60    # stricter thresholds
 
 ---
 
-## Phase 4 — API (Agent Interface)
+## Phase 4A — MCP Server (Local Agent Interface)
 
-> **Status: NOT STARTED** — `api/` directory is empty.
+> **Status: NOT STARTED** — Highest-priority agent interface. MCP is how Claude Code calls tools natively — stdio transport, no HTTP, no persistent server process required. Build this before the REST API.
 >
-> **Goal:** AI agents (Claude Code, local LLMs, custom scripts) can query
-> DevMemoryIndex over HTTP to get persistent developer memory.
+> **Why MCP before REST:** An agent calling `memory_search` via MCP requires zero server setup. The MCP server is spawned on-demand by Claude Code. REST requires a persistent `uvicorn` process and port management. For same-machine agent integration, MCP is strictly better.
+>
+> **All local. No cloud.** Uses `mcp[server]` (pure-Python PyPI package, stdio transport).
+
+### 4A.1 MCP Server Setup
+
+**New directory:** `mcp/`
+
+```
+mcp/
+├── __init__.py
+├── server.py     # FastMCP entrypoint + tool definitions + instructions
+└── tools.py      # Implementation wrapping core/ modules
+```
+
+**New optional dependency:**
+```toml
+# pyproject.toml
+[project.optional-dependencies]
+mcp = ["mcp[server]>=1.0"]
+```
+Install: `uv pip install "devmemoryindex[mcp]"`
+
+**Three tools to expose:**
+
+`memory_search(query, k=5, memory_type=None, repo=None, intent=None) → list[dict]`
+- Calls `store.hybrid_search(query, vector, k=k*2)`, applies type/repo filters
+- Returns: list of `{summary, type, repo, importance, tags, related}`
+
+`memory_context(query, max_tokens=4000, repo=None, format="claude") → str`
+- Calls `ContextEngine.build()`, returns `context_text`
+- Defaults to `format="claude"` → `<context>...</context>` XML that Claude parses best
+
+`memory_remember(summary, raw_text=None, memory_type="agent_solution", repo=None, importance=0.9, tags=[]) → dict`
+- Creates and stores a Memory. Returns `{status: "ok"|"duplicate", id}`
+- **Closes the agent loop**: agent solves problem → stores solution → findable forever
+
+```python
+# mcp/server.py
+from mcp.server.fastmcp import FastMCP
+from mcp.tools import search_memories, build_context, remember_memory
+
+mcp = FastMCP(
+    "devmemory",
+    instructions="""
+    DevMemoryIndex: Persistent developer memory store.
+
+    Use memory_search to find relevant past solutions, decisions, and commands.
+    Use memory_context to get a formatted context block before starting complex tasks.
+    Use memory_remember after solving a hard problem to persist the solution.
+
+    Search with specific technical terms for best results.
+    Always call memory_context before starting complex implementation tasks.
+    """,
+)
+
+mcp.tool()(search_memories)
+mcp.tool()(build_context)
+mcp.tool()(remember_memory)
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
+```
+
+```python
+# mcp/tools.py
+from core.store_provider import get_store
+from core.embeddings import embed
+from core.context_engine import ContextEngine
+from core.schema import Memory
+import hashlib
+from datetime import datetime
+
+
+def search_memories(
+    query: str,
+    k: int = 5,
+    memory_type: str | None = None,
+    repo: str | None = None,
+) -> list[dict]:
+    """Search developer memory for relevant past solutions, commits, notes, and commands."""
+    store = get_store()
+    vector = embed(query)
+    results = store.hybrid_search(query, vector, k=k * 2)
+    if memory_type:
+        results = [r for r in results if r.get("type") == memory_type]
+    if repo:
+        results = [r for r in results if r.get("repo") == repo]
+    return [
+        {
+            "summary": r["summary"],
+            "type": r["type"],
+            "repo": r.get("repo"),
+            "importance": r.get("importance"),
+            "tags": r.get("tags", []),
+        }
+        for r in results[:k]
+    ]
+
+
+def build_context(
+    query: str,
+    max_tokens: int = 4000,
+    repo: str | None = None,
+    format: str = "claude",
+) -> str:
+    """Build AI-ready context from developer memory for the given task or query."""
+    store = get_store()
+    engine = ContextEngine(store)
+    result = engine.build(query=query, repo=repo, max_tokens=max_tokens, format=format)
+    return result["context_text"]
+
+
+def remember_memory(
+    summary: str,
+    raw_text: str | None = None,
+    memory_type: str = "agent_solution",
+    repo: str | None = None,
+    importance: float = 0.9,
+    tags: list[str] = [],
+) -> dict:
+    """Persist a solution or decision to developer memory for future retrieval."""
+    store = get_store()
+    raw = raw_text or summary
+    mem_id = hashlib.sha256(raw[:500].encode()).hexdigest()
+    if store.exists(mem_id):
+        return {"status": "duplicate", "id": mem_id}
+    memory = Memory(
+        id=mem_id,
+        type=memory_type,
+        summary=summary[:200],
+        raw_text=raw,
+        source="mcp_agent",
+        repo=repo,
+        timestamp=datetime.utcnow(),
+        tags=tags + ["agent"],
+        importance=importance,
+    )
+    store.add(memory, embed(memory.summary))
+    return {"status": "ok", "id": mem_id}
+```
+
+### 4A.2 Claude Code Integration
+
+**Project-local MCP config** (`.mcp.json` in project root):
+```json
+{
+  "mcpServers": {
+    "devmemory": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp.server"],
+      "cwd": "/absolute/path/to/devmemoryindex"
+    }
+  }
+}
+```
+
+**Verification:** After setup, run `/mcp` in Claude Code — `devmemory` should appear as active with 3 tools: `memory_search`, `memory_context`, `memory_remember`.
+
+**MCP vs REST comparison:**
+
+| | MCP Server (Phase 4A) | REST API (Phase 4B) |
+|---|---|---|
+| Target | Claude Code, Claude Desktop | CI/CD scripts, shell tools, cross-machine |
+| Transport | stdio (same process, same machine) | HTTP (any network) |
+| Server startup | On-demand by Claude Code | Requires persistent `uvicorn` process |
+| Discovery | Automatic via `.mcp.json` config | Manual URL configuration |
+| Best for | Agent querying memories in real-time | Webhook ingest, external automation |
+
+**Done when:** Claude Code can call `memory_search("JWT auth")` and `memory_context("redis timeout")` as native tool calls, and `memory_remember("Fixed X by doing Y")` persists across sessions.
+
+---
+
+## Phase 4B — REST API (External Agent Interface)
+
+> **Status: NOT STARTED** — `api/` directory is empty. Build after Phase 4A.
+>
+> **Goal:** External processes (CI/CD pipelines, shell scripts, cross-machine agents) can push and query memories over HTTP. Not the primary agent interface — that's Phase 4A MCP.
+>
+> **New addition vs current spec:** `GET /memory/context/stream` — Server-Sent Events endpoint for agents that display context progressively.
+
+### 4B.1 FastAPI Server
+
+**File:** `api/server.py`
 
 ### 4.1 FastAPI Server
 
@@ -3334,32 +3582,110 @@ def run_daemon(interval: int = 300):
 
 ---
 
+## Phase 5 (new) — Smart Retrieval (Intelligence Layer)
+
+> **Pulled forward from Phase 6.** These features directly improve query quality for both voice search and agent queries. Build after Phase 4A MCP is working. No LLMs required — all rule-based or lightweight.
+
+### 5.A — Intent Classifier (Rule-Based, No LLM)
+
+**New file:** `core/intent_classifier.py`
+
+Classifies queries into intent categories and returns routing parameters that shift `ContextEngine`'s type weighting. No ML model — pure keyword matching on the already-transcribed or typed query.
+
+```python
+INTENT_RULES = {
+    "debug": {
+        "keywords": ["error", "fix", "bug", "crash", "exception", "traceback",
+                     "fail", "broken", "not working", "why is", "undefined"],
+        "type_boost": ["agent_solution", "terminal_command"],
+        "importance_weight": 0.35,  # raise from default 0.25
+        "recency_weight": 0.20,     # raise from default 0.15
+    },
+    "architecture": {
+        "keywords": ["design", "pattern", "structure", "architecture", "how does",
+                     "why did", "decision", "approach", "schema", "model"],
+        "type_boost": ["agent_solution", "git_commit"],
+        "importance_weight": 0.30,
+        "recency_weight": 0.10,     # older architectural decisions still relevant
+    },
+    "implementation": {
+        "keywords": ["how to", "implement", "add", "create", "build", "integrate",
+                     "setup", "configure", "install", "deploy"],
+        "type_boost": ["git_commit", "terminal_command", "file_content"],
+        "importance_weight": 0.25,
+        "recency_weight": 0.15,
+    },
+    "recall": {
+        "keywords": ["what was", "remember", "last time", "before", "when did",
+                     "voice", "said", "told"],
+        "type_boost": ["voice_note", "meeting_self", "note"],
+        "importance_weight": 0.20,
+        "recency_weight": 0.25,     # recall queries are highly recency-sensitive
+    },
+}
+
+def classify_intent(query: str) -> tuple[str, dict]:
+    """Return (intent_label, routing_params). Falls back to 'general' with no routing."""
+    query_lower = query.lower()
+    for intent, config in INTENT_RULES.items():
+        if any(kw in query_lower for kw in config["keywords"]):
+            return intent, config
+    return "general", {}
+```
+
+**Integration points:**
+- `core/context_engine.py` — add `intent` param to `build()`, shift `pack_within_budget()` ordering
+- `cli/commands/search.py --voice` — auto-classify transcribed query, optionally display with `--verbose`
+- `mcp/tools.py` — accept explicit `intent` from agents, or auto-classify
+
+**Done when:** `devmemory search --voice "why is the auth broken"` automatically routes as a `debug` query and returns `agent_solution` + `terminal_command` memories first.
+
+---
+
+### 5.B — Context Caching
+
+**New file:** `core/context_cache.py`
+
+In-memory cache inside `ContextEngine`. Key: `sha256(query + repo + format)`. Max 50 entries, 5-minute TTL, invalidated on `store.add()`. Eliminates re-embedding + re-searching for repeated MCP tool calls within a Claude Code session.
+
+---
+
+### 5.C — Memory Deduplication Job
+
+**New file:** `daemon/jobs/dedup.py`
+
+Weekly job: find memories where `summary[:100].lower()` matches another entry. Keep higher-importance version, delete lower. Wire into `daemon/scheduler.py`. Important after Claude connector and filesystem connector add high volumes.
+
+---
+
+### 5.D — Related Memories
+
+**Edit:** `core/memory_store.py` → `hybrid_search()` return value
+
+After ranking, add `"related": [ids of nearest neighbors from semantic_results not already in top-k][:3]`. No additional search calls — uses the already-retrieved `semantic_results` pool from step 1 of `hybrid_search`.
+
+MCP `memory_search` tool exposes this field — agents can follow memory links without extra tool calls.
+
+---
+
 ## Phase 6 — Intelligence Layer (Post-Launch)
 
-> These features turn DevMemoryIndex from a memory store into a cognitive system.
-> Build these after Phases 1–5 are working and you use the tool daily.
+> **Revised scope** — 6.1 (reinforcement), 6.5 (suggest), 6.2 (dedup), 6.4 (related), 6.6 (caching) pulled forward into new Phase 5. Remaining here: compression and namespace.
 
-### 6.1 Importance Reinforcement *(moved to Phase 5.4A)*
+### 6.1 Importance Reinforcement *(completed — Phase 5.4A)*
 
-> **This item has been pulled forward to Phase 5.4A** and fully specified there — including the `reinforce()` implementation on `MemoryStore` and the search-hook integration. See Phase 5.4A for the complete spec.
+> **Done.** `MemoryStore.reinforce()` implemented and called from `hybrid_search()` and `semantic_search()`.
 
-### 6.2 Memory Deduplication
-Periodically scan for near-duplicate memories (similar summary text) and merge them, keeping the higher-importance version.
+### 6.2 Memory Deduplication *(moved to Phase 5.C)*
 
 ### 6.3 Memory Compression
-Summarize old, low-importance memories into condensed versions. Store both original and compressed. Use compressed for context to save tokens.
+Summarize old, low-importance memories into condensed versions. Store both original and compressed. Use compressed for context to save tokens. *Deferred — too complex for current scale.*
 
-### 6.4 Related Memories
-After retrieving a memory, find its nearest neighbors and surface them as "related". This creates a knowledge graph effect.
+### 6.4 Related Memories *(moved to Phase 5.D)*
 
-### 6.5 Auto-Context (No Query Required)
-New CLI command: `devmemory suggest`
-- Reads the current `git diff` or staged changes.
-- Automatically builds relevant context without the user writing a query.
-- Useful for pre-populating Claude Code with project context.
+### 6.5 Auto-Context (No Query Required) *(moved to Phase 3.B — `devmemory suggest`)*
 
-### 6.6 Context Caching
-Cache the result of `ContextEngine.build()` keyed by `hash(query + repo)`. Invalidate when new memories are added. Avoids re-embedding and re-searching for repeated queries.
+### 6.6 Context Caching *(moved to Phase 5.B)*
 
 ### 6.7 Multi-Project Namespace
 Add a `project` field to Memory schema. Allow queries scoped to a project:
@@ -3403,8 +3729,9 @@ Local web dashboard with:
 - Context viewer
 - Memory stats and graphs
 
-### 7.7 Intent Classification
-Detect whether a query is about debugging, architecture, refactoring, or explanation. Route to different retrieval strategies per intent.
+### 7.7 Intent Classification *(moved to Phase 5.A — rule-based, no LLM)*
+
+> **Pulled forward.** A lightweight rule-based intent classifier now lives in `core/intent_classifier.py` (Phase 5.A) — no LLM needed. Phase 7.7 can be revisited later for ML-based intent classification if needed.
 
 ### 7.8 Codebase Map Generation
 Use embeddings to automatically cluster files and modules. Generate a visual map: `Auth → Database → API → Frontend`.
@@ -3419,36 +3746,38 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 
 ## Execution Order Summary
 
-| Priority | Phase | What You Build | Depends On | Status |
+> **Revised priority** — ordered around two tracks: human voice query and agent querying. Connector volume is secondary to interface quality.
+
+| Priority | Phase | What You Build | Time Est. | Status |
 |---|---|---|---|---|
-| ~~Done~~ | 1.1–1.2 | MemoryStore class, store provider | Schema + embeddings | ✅ |
-| ~~Done~~ | 1.3 | CLI scaffold + `search`, `add`, `stats` | Phase 1.1–1.2 | ✅ |
-| ~~Done~~ | 1.4–1.5 | Ranking module, hybrid search | Phase 1.1 | ✅ |
-| **Now** | — | **Cleanup: upgrade search.py to hybrid, fix test_memory_store, delete try_queries** | Phase 1.5 | |
-| **Now** | 1.6–1.7 | Context engine, content hashing | Phase 1.4–1.5 | ⚠️ Partially done — `ContextEngine` file created, tests pending |
-| **Now** | 3.2b | **CLI `context` command** | Phase 1.6 | |
-| **Next** | 1.8 | **Privacy / Redaction Filter** (`core/privacy.py`, hook into base connector) | Phase 1.7 | |
-| **Next** | 2 | Connectors (git, terminal, filesystem, markdown, claude, copilot) | Phase 1.7 | |
-| **Next** | 2.9 (update) | **VoiceConnector quality gates** (noise gate, speaker ID, registry exclusion) | Phase 2.9b (`speaker_profile`) | |
-| **Next** | 2.9b | **Meeting Connector** (`MeetingConnector` + `speaker_profile.py` + `enroll` command) | Phase 2.9 | |
-| **Next** | 2.10 | **Browser Bookmarks Connector** (Chrome JSON + Firefox SQLite) | Phase 2 | |
-| **Next** | 3.2a | **CLI `ingest` command** | Phase 2 | |
-| **Next** | 3.2d | **CLI `dictate` command** | Phase 2.9 | |
-| **Next** | 3.2e | **`search --voice` flag** | Phase 2.9 | |
-| **Next** | 3.2f | **CLI `tag` command** (`add`, `remove`, `list`; `--tag` search filter) | Phase 1 | |
-| **Next** | 3.2g | **CLI `pin` / `unpin` commands** (schema `pinned` field) | Phase 1 | |
-| **Next** | 3.2h | **CLI `export` / `import` commands** | Phase 1 | |
-| **Next** | 3.2i | **CLI `audit` command** | Phase 1.5 | |
-| **Next** | 3.2j | **CLI `repl` command** | Phase 1 | |
-| **Next** | 3.2k | **CLI `prune` command** | Phase 5.4B | |
-| **Next** | 4 | API (search, remember, context endpoints) | Phase 1.6 | |
-| **Next** | 4.5 | **Webhook `POST /ingest`** (CI/CD push ingest) | Phase 4 | |
-| **Next** | 5 | Daemon (scheduler, watcher, decay) | Phase 2 | |
-| **Next** | 5+3.2c | **CLI `daemon` command** | Phase 5 | |
-| **Next** | 5.4A | **`MemoryStore.reinforce()` + call from search methods** | Phase 1.5 | |
-| **Next** | 5.4B | **Memory pruning job + `devmemory prune` CLI** | Phase 5.3, 5.4A | |
-| **Later** | 6 | Intelligence (dedup, compression, auto-context; reinforcement moved to 5.4A) | Phases 1–5 | |
-| **Future** | 7 | Advanced (LLM, VSCode, web UI, agent mode) | Phases 1–6 | |
+| ~~Done~~ | 1.1–1.8 | Core engine: MemoryStore, ranking, hybrid search, context engine, privacy, dedup | — | ✅ |
+| ~~Done~~ | 2.1–2.3 | Connector base, registry, GitConnector | — | ✅ |
+| ~~Done~~ | 3.x | CLI: search, add, stats, prune, dictate, voice enroll, ingest, config | — | ✅ |
+| ~~Done~~ | 5.1, 5.3, 5.4 | Daemon scheduler, importance decay, reinforcement, memory pruning | — | ✅ |
+| ~~Done~~ | 3.A | `devmemory context` command (ContextEngine already done, just wire CLI) | — | ✅ |
+| ~~Done~~ | 3.B | `devmemory suggest` command (git diff → ContextEngine, zero new deps) | — | ✅ |
+| ~~Done~~ | 3.C | Enhanced `search --voice` (8s, quality gate, confirmation display, --speak) | — | ✅ |
+| **Now** | 3.D | `repl`, `export`/`import`, `daemon` CLI commands | 2 hours | |
+| **Week 1** | 4A | MCP Server — `memory_search`, `memory_context`, `memory_remember` tools | 2–3 days | |
+| **Week 1** | 2 (Claude first) | Claude Code Connector (past solutions = highest-value memories) | 1 day | |
+| **Week 1–2** | 2 (Terminal) | Terminal Connector | half day | |
+| **Week 2** | 5.A | Intent Classifier — rule-based keyword routing into ContextEngine | 1 day | |
+| **Week 2** | 2 (Markdown) | Markdown Connector (great for voice recall queries) | half day | |
+| **Week 2** | 2 (Filesystem) | Filesystem Connector | 1 day | |
+| **Week 2–3** | 4B | REST API — FastAPI server + 4 routes + streaming context endpoint | 2 days | |
+| **Week 3** | 5.B | Context caching (in-memory, 5min TTL, keyed by query+repo+format) | half day | |
+| **Week 3–4** | 5.C | Deduplication daemon job (weekly, merge near-duplicate summaries) | 1 day | |
+| **Week 4** | 5.D | Related memories in hybrid_search output (no extra searches) | half day | |
+| **Later** | 2.9b | Meeting Connector (full diarization with pyannote) | 2 days | |
+| **Later** | 2.8, 2.10 | Copilot, Browser connectors | 1 day each | |
+| **Later** | 5.2 | File Watcher (watchdog → filesystem events → auto-ingest) | 1 day | |
+| **Deferred** | 3.2f–3.2i | tag, pin, audit, export commands | — | |
+| **Future** | 7.x | Local LLM (Ollama), VSCode extension, Web UI, Agent Mode | — | |
+
+**Explicitly deprioritized from old order:**
+- `tag`, `pin`/`unpin`, `audit` commands — not on either primary goal track
+- Phase 6.3 Memory Compression — too complex for current scale
+- Phase 7.7 Intent Classification — simplified version pulled into Phase 5.A
 
 ---
 

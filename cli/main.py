@@ -19,6 +19,14 @@ app.command()(search)
 app.command()(add)
 app.command()(stats)
 
+# Phase 3.A — context command
+from cli.commands.context import context
+app.command()(context)
+
+# Phase 3.B — suggest command
+from cli.commands.suggest import suggest
+app.command()(suggest)
+
 # Phase 5.4B — memory pruning
 from cli.commands.prune import prune
 app.command()(prune)
