@@ -2,6 +2,7 @@ import lancedb
 import pyarrow as pa
 from core.schema import Memory
 from core.ranking import compute_score
+from core.context_cache import cache as _context_cache
 
 VECTOR_DIM = 384
 _schema = pa.schema([
@@ -41,6 +42,7 @@ class MemoryStore:
             "importance": memory.importance,
             "vector": vector
         }])
+        _context_cache.invalidate()  # new memory may change context results
         return True
 
     def exists(self, memory_id: str) -> bool:
@@ -133,11 +135,19 @@ class MemoryStore:
         ranked = sorted(combined.values(), key=compute_score, reverse=True)
 
         # 5. Reinforce only memories with strong semantic similarity (>= 0.7)
-        for r in ranked[:k]:
+        top = ranked[:k]
+        for r in top:
             if (1 - r.get("_distance", 1.0)) >= 0.7:
                 self.reinforce(r["id"], boost=0.02)
 
-        return ranked[:k]
+        # 6. Attach related memory IDs — nearest neighbours from the semantic
+        #    pool that didn't make it into top-k. No extra search calls needed.
+        top_ids = {r["id"] for r in top}
+        related_pool = [r for r in semantic_results if r["id"] not in top_ids]
+        for r in top:
+            r["related"] = [n["id"] for n in related_pool[:3]]
+
+        return top
 
     def delete(self, memory_id: str):
         self.collection.delete(f"id = '{memory_id}'")

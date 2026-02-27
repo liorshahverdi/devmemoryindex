@@ -3379,6 +3379,93 @@ curl -X POST "http://localhost:7711/memory/ingest" \
 
 ---
 
+### GitHub Actions Integration
+
+**Use case:** Every CI run (deploy, test failure, release) gets indexed as a memory automatically. You can later ask `devmemory search "last time prod deploy failed"` or use voice search to recall what broke and when.
+
+**Prerequisites:**
+- `devmemory serve` running on a machine reachable from GitHub's runners
+- Server exposed publicly — e.g. via `ngrok http 7711` or a VPS — not localhost
+- Server URL stored as a GitHub Actions secret: `DEVMEMORY_URL`
+
+**Example workflow** — `.github/workflows/deploy.yml`:
+
+```yaml
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run deploy
+        id: deploy
+        run: ./scripts/deploy.sh
+
+      - name: Index deploy event in DevMemoryIndex
+        if: always()   # run even if deploy fails
+        env:
+          DEVMEMORY_URL: ${{ secrets.DEVMEMORY_URL }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          STATUS: ${{ job.status }}
+          BRANCH: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          TEXT="Deploy $STATUS on $REPO@${SHA:0:7} (branch: $BRANCH, actor: $ACTOR)"
+          curl -s -X POST "$DEVMEMORY_URL/memory/ingest" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"text\": \"$TEXT\",
+              \"source\": \"github-actions\",
+              \"memory_type\": \"agent_solution\",
+              \"repo\": \"$REPO\",
+              \"importance\": $([ \"$STATUS\" = \"failure\" ] && echo 0.95 || echo 0.75),
+              \"tags\": [\"deploy\", \"ci\", \"$STATUS\"]
+            }"
+```
+
+**What gets indexed:**
+- `"Deploy success on myorg/api@a3f9c12 (branch: main, actor: lshahverdi)"` — importance 0.75
+- `"Deploy failure on myorg/api@a3f9c12 (branch: main, actor: lshahverdi)"` — importance 0.95
+
+**Querying later:**
+```bash
+devmemory search "deploy failure main branch"
+devmemory search --voice   # speak: "when did the last deploy fail?"
+```
+
+**Other events to index:**
+
+```yaml
+# Test failures
+- name: Index test failure
+  if: failure()
+  run: |
+    curl -s -X POST "$DEVMEMORY_URL/memory/ingest" \
+      -H "Content-Type: application/json" \
+      -d "{\"text\": \"Tests failed on $REPO@${SHA:0:7}: ${{ steps.test.outputs.summary }}\",
+           \"source\": \"github-actions\", \"memory_type\": \"debugging_insight\",
+           \"repo\": \"$REPO\", \"importance\": 0.9, \"tags\": [\"test\", \"failure\"]}"
+
+# Release published
+- name: Index release
+  if: github.event_name == 'release'
+  run: |
+    curl -s -X POST "$DEVMEMORY_URL/memory/ingest" \
+      -H "Content-Type: application/json" \
+      -d "{\"text\": \"Released ${{ github.event.release.tag_name }}: ${{ github.event.release.name }}\",
+           \"source\": \"github-actions\", \"memory_type\": \"git_commit\",
+           \"repo\": \"$REPO\", \"importance\": 0.85, \"tags\": [\"release\"]}"
+```
+
+---
+
 ## Phase 5 — Daemon (Automation)
 
 > **Goal:** Memories appear automatically without running manual commands.

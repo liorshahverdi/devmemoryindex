@@ -18,6 +18,7 @@ from core.embeddings import embed
 from core.token_budget import pack_within_budget
 from core.intent_classifier import classify_intent
 from core.ranking import recency_score
+from core.context_cache import cache as _cache
 
 
 class ContextEngine:
@@ -35,6 +36,11 @@ class ContextEngine:
         format: str = "raw",  # "raw" | "claude" | "markdown"
         intent: str | None = None,  # override auto-classification if provided
     ) -> dict:
+        # Check cache before doing any embedding or search work
+        cached = _cache.get(query, repo, format, intent)
+        if cached is not None:
+            return {**cached, "cached": True}
+
         if vector is None:
             vector = embed(query)
 
@@ -63,14 +69,17 @@ class ContextEngine:
         # 5. Format output
         context_text = self._format(selected, format)
 
-        return {
+        result = {
             "query": query,
             "intent": detected_intent,
             "memories": selected,
             "context_text": context_text,
             "token_estimate": token_count,
             "memory_count": len(selected),
+            "cached": False,
         }
+        _cache.set(query, repo, format, intent, result)
+        return result
 
     def _apply_intent_routing(self, memories: list, routing: dict) -> list:
         """Re-score candidates with intent-adjusted weights and sort boosted types first."""

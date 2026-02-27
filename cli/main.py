@@ -59,5 +59,9 @@ app.command(name="export")(export)
 app.command(name="import")(import_memories)
 app.command()(repl)
 
+# Phase 4B — REST API server
+from cli.commands.serve import serve
+app.command()(serve)
+
 if __name__ == "__main__":
     app()
