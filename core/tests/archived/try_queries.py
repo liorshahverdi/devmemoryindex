@@ -1,3 +1,10 @@
+"""Archived: Legacy test script for quick queries.
+
+Deprecated: This file was a prototype used for manual testing of memory queries.
+It is preserved here for reference and should not be executed or imported by tests.
+Archived on 2026-02-26.
+"""
+
 # """Quick script to test natural language queries against sample memories.
 # 
 # Legacy code from early prototyping, not currently used in automated tests but kept around for archival/reference purposes."""
