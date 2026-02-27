@@ -27,7 +27,6 @@
 | `core/tests/test_memory_store.py` | **Done** | 3 tests — all passing. |
 | `core/tests/test_ranking.py` | **Done** | 11 tests — recency decay, score formula, ranking order. All passing. |
 | `core/tests/test_hybrid_search.py` | **Done** | 5 tests — keyword surfacing, deduplication, hybrid-vs-semantic, importance ranking, k limit. All passing. |
-| `core/tests/try_queries.py` | **Broken** | Still uses removed legacy functions (`save_memory`, `search_memory`). Needs migration to `MemoryStore`. |
 | `cli/main.py` — Typer entrypoint | **Done** | 14 commands registered: `search`, `add`, `stats`, `prune`, `dictate`, `voice`, `context`, `suggest`, `daemon`, `export`, `import`, `repl`, `ingest`, `config`. |
 | `cli/commands/search.py` | **Done** | `hybrid_search()`, `--type`/`--repo` filters, `--voice` (3s countdown + 8s record + quality gate), `--speak` flag. |
 | `cli/commands/context.py` | **Done** | `devmemory context` — wraps `ContextEngine`, supports `--format raw/markdown/claude`, `--json`, `--copy`, `--repo`, `--tokens`. |
@@ -59,7 +58,15 @@
 | `mcp_server/tools.py` | **Done** | `search_memories` (now uses DB-level type/repo filters, returns `id` + `related[]`), `build_context`, `remember_memory`, `get_memory` (resolves related IDs). |
 | `api/routes/memory.py` — GET /{id} | **Done** | `GET /memory/{memory_id}` — fetch single memory by ID, 404 if not found. |
 | `scripts/reset_importance.py` | **Done** | Clamps drifted importance values back to 0.8. `--dry-run` supported. |
-| `daemon/scheduler.py` | **Done** | `run_daemon(interval)` loop — calls all connectors, prunes daily, logs counts. |
+| `daemon/scheduler.py` | **Done** | Per-connector schedule loop. Each connector fires independently when `now - last_run >= configured_interval`. Polls every 60 s. Logs to file via `daemon_log`. Trims log daily. Prunes daily, deduplicates weekly. |
+| `daemon/daemon_log.py` | **Done** | File logger to `~/.local/share/devmemory/daemon.log`. `write(msg, level)`, `trim(max_lines=5000)` — trims on startup + daily, `tail(n)` for CLI viewer. 7 tests. |
+| `cli/commands/log_cmd.py` | **Done** | `devmemory log [-n N]` — tail recent daemon log entries, colour-coded by level. `--path` prints log file path for `tail -f`. |
+| `core/config.py` — schedule helpers | **Done** | `get_connector_interval(name)`, `set_connector_interval(name, seconds)`, `get_all_intervals()`. Defaults: git=10m, claude=5m, terminal=1h, markdown=30m. Persisted as integers in `[schedule]` section of config.toml. `_to_toml()` updated to handle int values. |
+| `cli/commands/config_cmd.py` — set-schedule | **Done** | `devmemory config set-schedule <connector> <seconds>` — validates connector name, minimum 30 s. `devmemory config list` now always shows Connector Schedules table. |
+| `cli/commands/daemon_cmd.py` | **Done** | Sub-app with 4 commands: `devmemory daemon start` (foreground), `install` (launchd), `uninstall`, `status`. |
+| `daemon/launchd.py` | **Done** | macOS launchd integration. `install()` writes `~/Library/LaunchAgents/com.devmemory.daemon.plist` and loads it. `uninstall()` unloads + removes. `status()` checks PID via `launchctl list`. Daemon auto-starts at login, restarts on crash. stderr → `daemon-error.log`. |
+| `daemon/watcher.py` | **Done** | Filesystem watcher using `watchdog`. Watches configured markdown scan dirs for `.md` create/modify/move events. 2-second debounce prevents rapid-save storms. On trigger: runs `MarkdownConnector().collect()`. Graceful fallback if `watchdog` not installed. Started as a daemon thread by `run_daemon()`. |
+| `pyproject.toml` — watch extra | **Done** | `[watch]` optional dep: `watchdog>=3.0`. Also added to `[dev]` deps. |
 | `daemon/jobs/memory_cleanup.py` | **Done** | `prune_memories()` — removes importance < 0.05 OR (age > 90 days AND importance < 0.15). |
 | `daemon/jobs/importance_decay.py` | **Done** | `decay_importance(factor=0.99)` — daily decay on all non-pinned memories. |
 | `scripts/truncate_memories.py` | **Done** | Standalone bulk-delete CLI with `--filter-repo`, `--dry-run`, `--yes` confirmation. |
@@ -70,7 +77,6 @@
 **What's empty / partially implemented:**
 - `connectors/` — git + claude + terminal + markdown + voice done. Filesystem, copilot, browser are TODO.
 - `daemon/watcher.py` — filesystem watcher not yet implemented.
-- `core/tests/try_queries.py` — broken; uses removed legacy functions (`save_memory`, `search_memory`).
 
 **What's next:**
 1. **Phase 6** — Memory compression: summarize old low-importance memories to save tokens

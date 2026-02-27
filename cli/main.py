@@ -50,11 +50,11 @@ voice_app.command("enroll")(enroll)
 app.add_typer(voice_app, name="voice")
 
 # Phase 3.D — daemon, export/import, repl
-from cli.commands.daemon_cmd import daemon
+from cli.commands.daemon_cmd import app as daemon_app
 from cli.commands.export import export, import_memories
 from cli.commands.repl import repl
 
-app.command()(daemon)
+app.add_typer(daemon_app, name="daemon")
 app.command(name="export")(export)
 app.command(name="import")(import_memories)
 app.command()(repl)
@@ -62,6 +62,10 @@ app.command()(repl)
 # Phase 4B — REST API server
 from cli.commands.serve import serve
 app.command()(serve)
+
+# Daemon log viewer
+from cli.commands.log_cmd import log
+app.command()(log)
 
 if __name__ == "__main__":
     app()
