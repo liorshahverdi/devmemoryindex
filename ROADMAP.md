@@ -41,10 +41,12 @@
 | `cli/commands/export.py` | **Done** | `devmemory export` / `devmemory import` — JSON dump and restore with duplicate skipping. |
 | `cli/commands/repl.py` | **Done** | Interactive prompt loop — model stays loaded between queries. |
 | `connectors/base.py` — Abstract Connector | **Done** | Abstract `Connector` class with `collect()` method and shared store access. |
-| `connectors/registry.py` | **Done** | `get_connectors()` factory; `ALL_CONNECTORS` = `[GitConnector, ClaudeConnector]`. |
+| `connectors/registry.py` | **Done** | `get_connectors()` factory; `ALL_CONNECTORS` = `[GitConnector, ClaudeConnector, TerminalConnector]`. |
 | `connectors/git_connector.py` | **Done** | Fetches commit subject + body, embeds `subject+body[:512]`, stores full body in `raw_text`. Docs importance 0.5. |
 | `connectors/claude_connector.py` | **Done** | Indexes `~/.claude/projects/**/*.jsonl` assistant responses (>= 150 chars). Repo from `cwd`. 89 memories on first run. |
+| `connectors/terminal_connector.py` | **Done** | Indexes last 500 unique commands from `~/.zsh_history` / `~/.bash_history`. Filters trivial commands. Importance: docker/kubectl=0.8, git rebase=0.7, pip/uv=0.6. 535 memories on first run. |
 | `connectors/voice_connector.py` | **Done** | Records mic audio, transcribes with Whisper, checks speaker identity (cosine), stores as `voice_note` or `voice_ambient`. |
+| `core/intent_classifier.py` | **Done** | Rule-based classifier: debug / recall / architecture / implementation / general. Integrated into `ContextEngine.build()` and `search --voice`. Recall rule checked before implementation to prevent keyword overlap. |
 | `mcp_server/server.py` | **Done** | FastMCP entrypoint, stdio transport, registered with Claude Code via `claude mcp add`. |
 | `mcp_server/tools.py` | **Done** | `search_memories`, `build_context`, `remember_memory` — full docstrings, confirmed working via `/mcp`. |
 | `scripts/reset_importance.py` | **Done** | Clamps drifted importance values back to 0.8. `--dry-run` supported. |
@@ -58,15 +60,13 @@
 
 **What's empty / partially implemented:**
 - `api/` — routes directory present but empty (Phase 4B, not yet started).
-- `connectors/` — git + claude + voice done. Terminal, filesystem, markdown, copilot, browser are TODO.
+- `connectors/` — git + claude + terminal + voice done. Filesystem, markdown, copilot, browser are TODO.
 - `daemon/watcher.py` — filesystem watcher not yet implemented.
 - `core/tests/try_queries.py` — broken; uses removed legacy functions (`save_memory`, `search_memory`).
 
 **What's next:**
-1. **Phase 2 (Terminal)** — Terminal connector: index `~/.zsh_history` / `~/.bash_history`
-2. **Phase 5.A** — Intent Classifier: rule-based keyword routing into `ContextEngine`
-3. **Phase 2 (Markdown)** — Markdown/Obsidian connector
-4. **Phase 4B** — REST API: external agent interface (CI/CD webhooks, cross-machine access)
+1. **Phase 2 (Markdown)** — Markdown/Obsidian connector: index `.md` files from configured directories
+2. **Phase 4B** — REST API: external agent interface (CI/CD webhooks, cross-machine access)
 
 ---
 
@@ -3778,8 +3778,8 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | ~~Done~~ | 3.D | `repl`, `export`/`import`, `daemon` CLI commands | — | ✅ |
 | ~~Done~~ | 4A | MCP Server — `memory_search`, `memory_context`, `memory_remember` tools | — | ✅ |
 | ~~Done~~ | 2 (Claude) | Claude Code Connector (past solutions = highest-value memories) | — | ✅ |
-| **Week 1–2** | 2 (Terminal) | Terminal Connector | half day | |
-| **Week 2** | 5.A | Intent Classifier — rule-based keyword routing into ContextEngine | 1 day | |
+| ~~Done~~ | 2 (Terminal) | Terminal Connector | — | ✅ |
+| ~~Done~~ | 5.A | Intent Classifier — rule-based keyword routing into ContextEngine | — | ✅ |
 | **Week 2** | 2 (Markdown) | Markdown Connector (great for voice recall queries) | half day | |
 | **Week 2** | 2 (Filesystem) | Filesystem Connector | 1 day | |
 | **Week 2–3** | 4B | REST API — FastAPI server + 4 routes + streaming context endpoint | 2 days | |

@@ -2,6 +2,7 @@ import typer
 import json
 import subprocess
 from rich.console import Console
+from rich.markdown import Markdown
 from core.store_provider import get_store
 from core.embeddings import embed
 from core.context_engine import ContextEngine
@@ -41,7 +42,10 @@ def context(
         }
         console.print_json(json.dumps(output))
     else:
-        console.print(result["context_text"])
+        if format == "markdown":
+            console.print(Markdown(result["context_text"]))
+        else:
+            console.print(result["context_text"])
 
     if copy:
         try:

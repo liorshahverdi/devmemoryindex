@@ -69,7 +69,10 @@ def search(
             console.print("[yellow]Query too short. Try again.[/yellow]")
             raise typer.Exit(1)
 
-        console.print(f'\nSearching for: [bold]"{text}"[/bold]\n')
+        from core.intent_classifier import classify_intent
+        intent_label, _ = classify_intent(text)
+        intent_str = f" [dim](intent: {intent_label})[/dim]" if intent_label != "general" else ""
+        console.print(f'\nSearching for: [bold]"{text}"[/bold]{intent_str}\n')
         query = text
 
     elif query is None:

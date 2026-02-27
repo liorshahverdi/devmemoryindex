@@ -68,6 +68,7 @@ def build_context(
     max_tokens: int = 4000,
     repo: str | None = None,
     format: str = "claude",
+    intent: str | None = None,
 ) -> str:
     """Build AI-ready context from developer memory for the given task or query.
 
@@ -83,13 +84,19 @@ def build_context(
                       "claude"   — <context>...</context> XML block (default, best for Claude)
                       "markdown" — ### Relevant Past Solutions header with bullet list
                       "raw"      — plain text, one summary per line
+        intent:     Optional intent override to control result weighting. Options:
+                      "debug"          — boost agent_solution + terminal_command
+                      "architecture"   — boost agent_solution + git_commit, lower recency weight
+                      "implementation" — boost git_commit + terminal_command
+                      "recall"         — boost voice_note, raise recency weight
+                    Auto-classified from query if not provided.
 
     Returns:
         Formatted string ready to prepend to a prompt or display directly.
     """
     store = get_store()
     engine = ContextEngine(store)
-    result = engine.build(query=query, repo=repo, max_tokens=max_tokens, format=format)
+    result = engine.build(query=query, repo=repo, max_tokens=max_tokens, format=format, intent=intent)
     return result["context_text"]
 
 

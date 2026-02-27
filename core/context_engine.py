@@ -16,6 +16,8 @@ DOES NOT:
 from core.memory_store import MemoryStore
 from core.embeddings import embed
 from core.token_budget import pack_within_budget
+from core.intent_classifier import classify_intent
+from core.ranking import recency_score
 
 
 class ContextEngine:
@@ -31,6 +33,7 @@ class ContextEngine:
         max_tokens: int = 4000,
         max_memories: int = 10,
         format: str = "raw",  # "raw" | "claude" | "markdown"
+        intent: str | None = None,  # override auto-classification if provided
     ) -> dict:
         if vector is None:
             vector = embed(query)
@@ -42,10 +45,17 @@ class ContextEngine:
         if repo:
             candidates = [c for c in candidates if c.get("repo") == repo]
 
-        # 3. Deduplicate near-identical summaries
+        # 3. Classify intent and re-rank with adjusted weights + type boosting
+        detected_intent, routing = (
+            (intent, {}) if intent else classify_intent(query)
+        )
+        if routing:
+            candidates = self._apply_intent_routing(candidates, routing)
+
+        # 4. Deduplicate near-identical summaries
         candidates = self._deduplicate(candidates)
 
-        # 4. Pack within token budget (uses core.token_budget)
+        # 5. Pack within token budget (uses core.token_budget)
         selected, token_count = pack_within_budget(
             candidates, max_tokens=max_tokens, max_items=max_memories
         )
@@ -55,11 +65,29 @@ class ContextEngine:
 
         return {
             "query": query,
+            "intent": detected_intent,
             "memories": selected,
             "context_text": context_text,
             "token_estimate": token_count,
             "memory_count": len(selected),
         }
+
+    def _apply_intent_routing(self, memories: list, routing: dict) -> list:
+        """Re-score candidates with intent-adjusted weights and sort boosted types first."""
+        type_boost = routing.get("type_boost", [])
+        imp_w = routing.get("importance_weight", 0.15)
+        rec_w = routing.get("recency_weight", 0.10)
+        sem_w = 1.0 - imp_w - rec_w
+
+        def intent_score(m: dict) -> tuple:
+            semantic = 1 - m.get("_distance", 1.0)
+            importance = m.get("importance", 0.5)
+            recency = recency_score(m["timestamp"])
+            score = semantic * sem_w + importance * imp_w + recency * rec_w
+            boosted = 1 if m.get("type") in type_boost else 0
+            return (boosted, score)
+
+        return sorted(memories, key=intent_score, reverse=True)
 
     def _deduplicate(self, memories: list, threshold: float = 0.9) -> list:
         seen = set()
