@@ -9,6 +9,12 @@ Example:
         "/Users/you/projects/myapp",
         "/Users/you/projects/other",
     ]
+
+    [markdown]
+    scan_dirs = [
+        "/Users/you/notes",
+        "/Users/you/obsidian-vault",
+    ]
 """
 
 import tomllib
@@ -73,5 +79,35 @@ def remove_git_path(path: str) -> bool:
         return False
     paths.remove(path)
     data["git"]["repo_paths"] = paths
+    save(data)
+    return True
+
+
+# ── Markdown-specific helpers ─────────────────────────────────────────
+
+
+def get_markdown_dirs() -> list[str]:
+    return load().get("markdown", {}).get("scan_dirs", [])
+
+
+def add_markdown_dir(path: str) -> bool:
+    """Add path to markdown.scan_dirs. Returns False if already present."""
+    data = load()
+    data.setdefault("markdown", {}).setdefault("scan_dirs", [])
+    if path in data["markdown"]["scan_dirs"]:
+        return False
+    data["markdown"]["scan_dirs"].append(path)
+    save(data)
+    return True
+
+
+def remove_markdown_dir(path: str) -> bool:
+    """Remove path from markdown.scan_dirs. Returns False if not found."""
+    data = load()
+    dirs = data.get("markdown", {}).get("scan_dirs", [])
+    if path not in dirs:
+        return False
+    dirs.remove(path)
+    data["markdown"]["scan_dirs"] = dirs
     save(data)
     return True

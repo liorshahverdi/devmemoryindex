@@ -38,20 +38,59 @@ def remove_repo(
 @app.command("list")
 def list_config():
     """Show all configured paths."""
-    paths = cfg.get_git_paths()
-    if not paths:
+    git_paths = cfg.get_git_paths()
+    md_dirs = cfg.get_markdown_dirs()
+
+    if not git_paths and not md_dirs:
         console.print(
-            "[yellow]No repos configured.[/yellow]\n"
-            "Run [bold]devmemory config add <path>[/bold] or "
-            "[bold]devmemory config scan <directory>[/bold]."
+            "[yellow]No paths configured.[/yellow]\n"
+            "Run [bold]devmemory config add <path>[/bold] to track a git repo, or\n"
+            "[bold]devmemory config add-notes <dir>[/bold] to scan a notes directory."
         )
         return
-    table = Table(title="Tracked Git Repos")
-    table.add_column("#", style="dim", width=4)
-    table.add_column("Path", style="cyan")
-    for i, p in enumerate(paths, 1):
-        table.add_row(str(i), p)
-    console.print(table)
+
+    if git_paths:
+        table = Table(title="Tracked Git Repos")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Path", style="cyan")
+        for i, p in enumerate(git_paths, 1):
+            table.add_row(str(i), p)
+        console.print(table)
+
+    if md_dirs:
+        table = Table(title="Markdown Scan Dirs")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Path", style="green")
+        for i, p in enumerate(md_dirs, 1):
+            table.add_row(str(i), p)
+        console.print(table)
+
+
+@app.command("add-notes")
+def add_notes_dir(
+    path: str = typer.Argument(..., help="Directory to scan for .md files"),
+):
+    """Add a directory to the markdown notes scan list."""
+    resolved = str(Path(path).expanduser().resolve())
+    if not Path(resolved).is_dir():
+        console.print(f"[red]Path not found: {resolved}[/red]")
+        raise typer.Exit(1)
+    if cfg.add_markdown_dir(resolved):
+        console.print(f"[green]Added:[/green] {resolved}")
+    else:
+        console.print(f"[yellow]Already tracked:[/yellow] {resolved}")
+
+
+@app.command("remove-notes")
+def remove_notes_dir(
+    path: str = typer.Argument(..., help="Directory to remove from markdown scan list"),
+):
+    """Remove a directory from the markdown notes scan list."""
+    resolved = str(Path(path).expanduser().resolve())
+    if cfg.remove_markdown_dir(resolved):
+        console.print(f"[yellow]Removed:[/yellow] {resolved}")
+    else:
+        console.print(f"[red]Not found in config:[/red] {resolved}")
 
 
 @app.command("scan")

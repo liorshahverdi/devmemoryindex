@@ -48,7 +48,7 @@ def _record_and_transcribe(duration: int = 8) -> tuple[str, float]:
 def search(
     query: Optional[str] = typer.Argument(None, help="Natural language search query"),
     k: int = typer.Option(5, "--limit", "-k", help="Number of results"),
-    type: str | None = typer.Option(None, "--type", "-t", help="Filter by memory type"),
+    memory_type: str | None = typer.Option(None, "--type", "-t", help="Filter by memory type"),
     repo: str | None = typer.Option(None, "--repo", "-r", help="Filter by repo name"),
     voice: bool = typer.Option(False, "--voice", help="Speak your query instead of typing"),
     speak: bool = typer.Option(False, "--speak", help="Read top result aloud (macOS say)"),
@@ -81,14 +81,11 @@ def search(
 
     store = get_store()
     vector = embed(query)
-    results = store.hybrid_search(query, vector, k=k * 3)
-
-    if type:
-        results = [r for r in results if r.get("type") == type]
-    if repo:
-        results = [r for r in results if r.get("repo") == repo]
-
-    results = results[:k]
+    results = store.hybrid_search(
+        query, vector, k=k,
+        type_filter=memory_type,
+        repo_filter=repo,
+    )
 
     if not results:
         console.print("[yellow]No memories found.[/yellow]")

@@ -1,9 +1,9 @@
 from connectors.git_connector import GitConnector
 from connectors.claude_connector import ClaudeConnector
 from connectors.terminal_connector import TerminalConnector
+from connectors.markdown_connector import MarkdownConnector
 # Connectors added here as each Phase 2.x is implemented:
 # from connectors.filesystem_connector import FilesystemConnector
-# from connectors.markdown_connector import MarkdownConnector
 # from connectors.copilot_connector import CopilotConnector
 # from connectors.browser_connector import BrowserConnector
 
@@ -16,9 +16,8 @@ ALL_CONNECTORS = [
     GitConnector,
     ClaudeConnector,
     TerminalConnector,
+    MarkdownConnector,
     # FilesystemConnector,
-    # MarkdownConnector,
-    # ClaudeConnector,
     # CopilotConnector,
     # VoiceConnector — NOT here. Use VoiceConnector() directly in CLI commands.
     # BrowserConnector,

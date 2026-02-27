@@ -82,17 +82,41 @@ class MemoryStore:
             self.reinforce(r["id"], boost=0.05)
         return results
 
-    def hybrid_search(self, query: str, vector: list, k: int = 5) -> list:
+    def hybrid_search(
+        self,
+        query: str,
+        vector: list,
+        k: int = 5,
+        type_filter: str | None = None,
+        repo_filter: str | None = None,
+    ) -> list:
+        # Build optional WHERE clause applied at the DB level so filters
+        # don't silently exclude results after the k-cap is already applied.
+        conditions: list[str] = []
+        if type_filter:
+            safe_type = type_filter.replace("'", "''")
+            conditions.append(f"type = '{safe_type}'")
+        if repo_filter:
+            safe_repo = repo_filter.replace("'", "''")
+            conditions.append(f"repo = '{safe_repo}'")
+        where_clause = " AND ".join(conditions) if conditions else None
+
         # 1. Semantic search — over-retrieve
-        semantic_results = self.collection.search(vector).limit(50).to_list()
+        sem_q = self.collection.search(vector).limit(50)
+        if where_clause:
+            sem_q = sem_q.where(where_clause)
+        semantic_results = sem_q.to_list()
 
         # 2. Keyword search — catch exact term matches semantic may miss
         safe_query = query.replace("'", "''")
+        kw_where = f"summary LIKE '%{safe_query}%' OR raw_text LIKE '%{safe_query}%'"
+        if where_clause:
+            kw_where = f"({kw_where}) AND {where_clause}"
         try:
             keyword_results = (
                 self.collection
                 .search()
-                .where(f"summary LIKE '%{safe_query}%' OR raw_text LIKE '%{safe_query}%'")
+                .where(kw_where)
                 .limit(50)
                 .to_list()
             )
@@ -109,7 +133,6 @@ class MemoryStore:
         ranked = sorted(combined.values(), key=compute_score, reverse=True)
 
         # 5. Reinforce only memories with strong semantic similarity (>= 0.7)
-        # — prevents low-relevance results from drifting upward on repeated searches
         for r in ranked[:k]:
             if (1 - r.get("_distance", 1.0)) >= 0.7:
                 self.reinforce(r["id"], boost=0.02)
