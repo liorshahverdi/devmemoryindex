@@ -23,9 +23,17 @@ app.command()(stats)
 from cli.commands.prune import prune
 app.command()(prune)
 
+# Phase 2 — connector ingestion
+from cli.commands.ingest import ingest
+app.command()(ingest)
+
 # Phase 2.9 — voice dictation
 from cli.commands.dictate import dictate
 app.command()(dictate)
+
+# Config management (devmemory config add/remove/list/scan)
+from cli.commands.config_cmd import app as config_app
+app.add_typer(config_app, name="config")
 
 # Phase 2.9b — voice enroll (devmemory voice enroll)
 from cli.commands.enroll import enroll

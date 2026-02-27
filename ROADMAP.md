@@ -782,7 +782,9 @@ def get_connectors(names: list[str] | None = None) -> list:
 
 ---
 
-### 2.3 Git Connector
+### 2.3 Git Connector ✅
+
+**Status: COMPLETED** — `connectors/git_connector.py` implemented. 3 tests passing. Wired into registry.
 
 **File:** `connectors/git_connector.py`
 

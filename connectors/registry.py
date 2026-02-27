@@ -1,5 +1,5 @@
+from connectors.git_connector import GitConnector
 # Connectors added here as each Phase 2.x is implemented:
-# from connectors.git_connector import GitConnector
 # from connectors.terminal_connector import TerminalConnector
 # from connectors.filesystem_connector import FilesystemConnector
 # from connectors.markdown_connector import MarkdownConnector
@@ -13,7 +13,7 @@
 #   devmemory search --voice
 # Running it on a schedule records silence, noise, and other people's speech.
 ALL_CONNECTORS = [
-    # GitConnector,
+    GitConnector,
     # TerminalConnector,
     # FilesystemConnector,
     # MarkdownConnector,
