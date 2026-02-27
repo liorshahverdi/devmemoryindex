@@ -40,13 +40,18 @@ def list_config():
     """Show all configured paths and connector schedules."""
     git_paths = cfg.get_git_paths()
     md_dirs = cfg.get_markdown_dirs()
+    fs_dirs = cfg.get_filesystem_dirs()
+    meeting_dirs = cfg.get_meeting_dirs()
     intervals = cfg.get_all_intervals()
 
-    if not git_paths and not md_dirs:
+    any_paths = git_paths or md_dirs or fs_dirs or meeting_dirs
+    if not any_paths:
         console.print(
             "[yellow]No paths configured.[/yellow]\n"
-            "Run [bold]devmemory config add <path>[/bold] to track a git repo, or\n"
-            "[bold]devmemory config add-notes <dir>[/bold] to scan a notes directory."
+            "Run [bold]devmemory config add <path>[/bold] to track a git repo,\n"
+            "[bold]devmemory config add-notes <dir>[/bold] to scan markdown notes,\n"
+            "[bold]devmemory config add-code <dir>[/bold] to index source code, or\n"
+            "[bold]devmemory config add-meetings <dir>[/bold] to transcribe recordings."
         )
 
     if git_paths:
@@ -62,6 +67,22 @@ def list_config():
         table.add_column("#", style="dim", width=4)
         table.add_column("Path", style="green")
         for i, p in enumerate(md_dirs, 1):
+            table.add_row(str(i), p)
+        console.print(table)
+
+    if fs_dirs:
+        table = Table(title="Code Scan Dirs")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Path", style="blue")
+        for i, p in enumerate(fs_dirs, 1):
+            table.add_row(str(i), p)
+        console.print(table)
+
+    if meeting_dirs:
+        table = Table(title="Meeting Recording Dirs")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Path", style="magenta")
+        for i, p in enumerate(meeting_dirs, 1):
             table.add_row(str(i), p)
         console.print(table)
 
@@ -114,6 +135,60 @@ def remove_notes_dir(
     """Remove a directory from the markdown notes scan list."""
     resolved = str(Path(path).expanduser().resolve())
     if cfg.remove_markdown_dir(resolved):
+        console.print(f"[yellow]Removed:[/yellow] {resolved}")
+    else:
+        console.print(f"[red]Not found in config:[/red] {resolved}")
+
+
+@app.command("add-code")
+def add_code_dir(
+    path: str = typer.Argument(..., help="Directory to scan for source code"),
+):
+    """Add a directory to the code (filesystem) scan list."""
+    resolved = str(Path(path).expanduser().resolve())
+    if not Path(resolved).is_dir():
+        console.print(f"[red]Path not found: {resolved}[/red]")
+        raise typer.Exit(1)
+    if cfg.add_filesystem_dir(resolved):
+        console.print(f"[green]Added:[/green] {resolved}")
+    else:
+        console.print(f"[yellow]Already tracked:[/yellow] {resolved}")
+
+
+@app.command("remove-code")
+def remove_code_dir(
+    path: str = typer.Argument(..., help="Directory to remove from code scan list"),
+):
+    """Remove a directory from the code (filesystem) scan list."""
+    resolved = str(Path(path).expanduser().resolve())
+    if cfg.remove_filesystem_dir(resolved):
+        console.print(f"[yellow]Removed:[/yellow] {resolved}")
+    else:
+        console.print(f"[red]Not found in config:[/red] {resolved}")
+
+
+@app.command("add-meetings")
+def add_meetings_dir(
+    path: str = typer.Argument(..., help="Directory to scan for audio recordings"),
+):
+    """Add a directory to the meeting recordings scan list."""
+    resolved = str(Path(path).expanduser().resolve())
+    if not Path(resolved).is_dir():
+        console.print(f"[red]Path not found: {resolved}[/red]")
+        raise typer.Exit(1)
+    if cfg.add_meeting_dir(resolved):
+        console.print(f"[green]Added:[/green] {resolved}")
+    else:
+        console.print(f"[yellow]Already tracked:[/yellow] {resolved}")
+
+
+@app.command("remove-meetings")
+def remove_meetings_dir(
+    path: str = typer.Argument(..., help="Directory to remove from meetings scan list"),
+):
+    """Remove a directory from the meeting recordings scan list."""
+    resolved = str(Path(path).expanduser().resolve())
+    if cfg.remove_meeting_dir(resolved):
         console.print(f"[yellow]Removed:[/yellow] {resolved}")
     else:
         console.print(f"[red]Not found in config:[/red] {resolved}")

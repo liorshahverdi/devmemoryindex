@@ -121,13 +121,77 @@ def remove_markdown_dir(path: str) -> bool:
     return True
 
 
+# ── Filesystem-specific helpers ───────────────────────────────────────
+
+
+def get_filesystem_dirs() -> list[str]:
+    return load().get("filesystem", {}).get("scan_dirs", [])
+
+
+def add_filesystem_dir(path: str) -> bool:
+    """Add path to filesystem.scan_dirs. Returns False if already present."""
+    data = load()
+    data.setdefault("filesystem", {}).setdefault("scan_dirs", [])
+    if path in data["filesystem"]["scan_dirs"]:
+        return False
+    data["filesystem"]["scan_dirs"].append(path)
+    save(data)
+    return True
+
+
+def remove_filesystem_dir(path: str) -> bool:
+    """Remove path from filesystem.scan_dirs. Returns False if not found."""
+    data = load()
+    dirs = data.get("filesystem", {}).get("scan_dirs", [])
+    if path not in dirs:
+        return False
+    dirs.remove(path)
+    data["filesystem"]["scan_dirs"] = dirs
+    save(data)
+    return True
+
+
+# ── Meeting-specific helpers ──────────────────────────────────────────
+
+
+def get_meeting_dirs() -> list[str]:
+    return load().get("meeting", {}).get("scan_dirs", [])
+
+
+def add_meeting_dir(path: str) -> bool:
+    """Add path to meeting.scan_dirs. Returns False if already present."""
+    data = load()
+    data.setdefault("meeting", {}).setdefault("scan_dirs", [])
+    if path in data["meeting"]["scan_dirs"]:
+        return False
+    data["meeting"]["scan_dirs"].append(path)
+    save(data)
+    return True
+
+
+def remove_meeting_dir(path: str) -> bool:
+    """Remove path from meeting.scan_dirs. Returns False if not found."""
+    data = load()
+    dirs = data.get("meeting", {}).get("scan_dirs", [])
+    if path not in dirs:
+        return False
+    dirs.remove(path)
+    data["meeting"]["scan_dirs"] = dirs
+    save(data)
+    return True
+
+
 # ── Schedule helpers ──────────────────────────────────────────────────
 
 _DEFAULT_INTERVALS: dict[str, int] = {
-    "git": 600,       # 10 min
-    "claude": 300,    # 5 min
-    "terminal": 3600, # 1 hour
-    "markdown": 1800, # 30 min
+    "git": 600,        # 10 min
+    "claude": 300,     # 5 min
+    "terminal": 3600,  # 1 hour
+    "markdown": 1800,  # 30 min
+    "filesystem": 1800,  # 30 min
+    "copilot": 600,    # 10 min
+    "browser": 7200,   # 2 hours
+    "meeting": 3600,   # 1 hour
 }
 
 CONNECTOR_NAMES = list(_DEFAULT_INTERVALS.keys())

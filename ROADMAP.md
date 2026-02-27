@@ -3817,48 +3817,245 @@ devmemory search "auth" --project api-gateway
 
 > These are longer-term enhancements for when DevMemoryIndex has active users.
 
-### 7.1 Local LLM Integration (RAG Answers)
-Connect to Ollama or llama.cpp. Pipeline: query → retrieve memories → LLM generates answer citing sources.
-```bash
-devmemory ask "how does auth work in this project?"
+**Recommended implementation order: 7.3 → 7.4 → 7.7 → 7.1 → 7.2 → 7.8 → 7.9 → 7.5 → 7.6**
+
+**Dependency graph:**
 ```
+7.1 (Local LLM/RAG) ──► 7.2 (Feedback Loop)
+7.1 (Local LLM/RAG) ──► 7.9 (Agent Mode)
+7.4 (Semantic Diff) ──► 7.8 (Codebase Map) [recommended]
+7.1 (RAG API)       ──► 7.6 (Web UI chat window)
+Phase 4B REST API   ──► 7.5 (VSCode Extension)
+Phase 4B REST API   ──► 7.6 (Web UI)
+Standalone:             7.3, 7.4
+New [llm] dep:          7.1, 7.2, 7.9
+New [ml] dep:           7.7, 7.8
+```
+
+---
+
+### 7.1 Local LLM / RAG (`devmemory ask`)
+
+`devmemory ask "why did we move from Redis?"` → retrieves top memories → injects into LLM prompt → streams cited answer to terminal.
+
+**New files:**
+- `core/llm_backend.py` — abstract `LLMBackend` + `OllamaBackend` (POST `http://localhost:11434/api/generate`, stream via `httpx`) + `LlamaCppBackend` (POST `/completion` port 8080) + `get_backend(cfg_dict)` factory
+- `core/rag_engine.py` — `RAGEngine(store, backend)`: `ask(query, repo, max_context_tokens=3000, stream=True) -> (answer_str, cited_memories)`. Calls `ContextEngine.build(format="raw")`. `_format_for_prompt()` labels memories as `[MEMORY-1]...[MEMORY-N]`. `_build_prompt()` = system prompt + context + "Answer:"
+- `cli/commands/ask.py` — `ask(query, repo, model, no_stream, save)`, Rich `Live` for streaming
+
+**Modified files:** `core/config.py` (add `get_llm_config() -> dict` for `[llm]` section), `pyproject.toml` (add `llm = ["httpx>=0.27"]`), `cli/main.py` (register inside `try/except ImportError`)
+
+**Reuses:** `ContextEngine.build()`, `get_store()`, `embed()`
+
+**Verify:**
+```bash
+uv pip install -e ".[llm]"
+ollama serve & ollama pull mistral
+devmemory ask "how does the daemon scheduler work?"
+# Streaming answer with [MEMORY-N] citations
+```
+
+---
 
 ### 7.2 Memory Feedback Loop
-Save LLM-generated answers back into memory. The system literally learns from its own answers over time.
+
+After `devmemory ask` completes, saves the Q&A pair as a new `agent_solution` memory (importance=0.75, tags=`["rag_answer", "auto_indexed"]`). Default on; `--no-save` to disable.
+
+**No new files** — modifies only `core/rag_engine.py` and `cli/commands/ask.py` (both from 7.1):
+- `rag_engine.py`: add `save_answer(query, answer, cited_memories, repo) -> mem_id`. ID = `sha256(raw_text[:500])` for idempotency. Calls `redact()` before storing. Importance capped at 0.75 to prevent auto-answers dominating search.
+- `ask.py`: call `engine.save_answer()` after stream completes when `--save` (default True)
+
+**Reuses:** `redact()` (`core/privacy.py`), `store.exists()` + `store.add()`, `embed()`
+
+**Verify:**
+```bash
+devmemory ask "how does the dedup job work?"
+devmemory search "dedup job" --type agent_solution  # returns saved answer
+```
+
+---
 
 ### 7.3 Git Hook Integration
-Auto-index on every commit without needing the daemon:
+
+Installs a `post-commit` hook so every `git commit` immediately calls `devmemory ingest --source git &`. No daemon poll delay.
+
+**New files:**
+- `core/hooks.py` — pure Python, no new deps. `HOOK_MARKER = "# devmemory-hook"`. `install_hook(repo_path) -> "installed"|"appended"|"already_installed"|"error_not_a_repo"` (appends safely to existing hooks; sets `chmod +x`). `uninstall_hook()` strips only devmemory block (HOOK_MARKER to next blank line); deletes file if now empty. `hook_status(repo_path) -> bool`
+- `cli/commands/hook_cmd.py` — Typer sub-app: `install [repo]`, `uninstall [repo]`, `status [repo]`
+
+**Modified files:** `cli/main.py` — `app.add_typer(hook_app, name="hook")`
+
+**Reuses:** `get_git_paths()` (`core/config.py`) for iterating all repos in `status`
+
+**Verify:**
 ```bash
-# .git/hooks/post-commit
-devmemory ingest --source git
+mkdir /tmp/testrepo && git init /tmp/testrepo
+devmemory hook install /tmp/testrepo
+echo "x" > /tmp/testrepo/f.txt && git -C /tmp/testrepo add . && git -C /tmp/testrepo commit -m "hook test"
+sleep 2 && devmemory search "hook test"  # immediately indexed
+devmemory hook uninstall /tmp/testrepo
 ```
+
+---
 
 ### 7.4 Semantic Diff Awareness
-Store before/after state of code changes. Enables queries like "why did we remove Redis?" by understanding the delta, not just the commit message.
+
+New connector indexes per-file code diffs as `git_diff` memories. Enables semantic queries about code content ("why did we remove Redis?"), not just commit messages.
+
+**New files:**
+- `connectors/diff_connector.py` — `DiffConnector(Connector)`, `name = "diff"`, `commit_limit=50`. `_index_repo()`: `git log -n50` → for each commit: `git diff --unified=3 {sha}~1 {sha}` → `_split_diff_by_file()` splits on `diff --git` lines → one memory per file. Memory type `"git_diff"`, importance 0.6. ID = `sha256(f"{sha}|{repo_name}|{filepath}")`. embed_text uses only +/- lines (not context) for signal density, truncated to 512 chars. Applies `self._redact()` to raw diff.
+
+**Modified files:**
+- `connectors/registry.py` — add `DiffConnector` after `GitConnector` in `ALL_CONNECTORS`
+- `core/intent_classifier.py` — add "why did", "removed", "deleted", "before" keywords to `architecture` and `recall` intents
+
+**Reuses:** `Connector` base class, `embed()`, `get_git_paths()`, `hashlib.sha256`
+
+**Verify:**
+```bash
+devmemory ingest --source diff
+devmemory search "removed Redis" --type git_diff
+```
+
+---
 
 ### 7.5 VSCode Extension
-Minimal extension that adds a "Ask DevMemory" command. Sends selected code or current error to the API, returns relevant context inline.
+
+Two VSCode commands: "DevMemory: Ask" (selected text or input → `GET /memory/context` → Output Channel) and "DevMemory: Remember selection" (`POST /memory/remember`). Talks to REST API on port 7711.
+
+**New directory: `vscode-extension/`** (TypeScript, independent project)
+```
+vscode-extension/
+  package.json     # engines: vscode ^1.85.0; zero runtime deps (uses built-in fetch)
+  tsconfig.json
+  src/
+    extension.ts   # activate(): registers devmemory.ask + devmemory.remember
+    api.ts         # getContext(query, apiUrl, format), rememberText(summary, raw, apiUrl)
+```
+- Uses `fetch()` (Node 18+ built-in in VS Code 1.85+) — no axios/node-fetch
+- `devmemory.ask`: selected text → query, else `showInputBox`. Result → `OutputChannel("DevMemory")`
+- `devmemory.remember`: requires selection; `showInputBox` for summary
+- Error path: `showErrorMessage("Is devmemory serve running?")`
+- Settings: `devmemory.apiUrl` (default `http://localhost:7711`), `devmemory.format` (default `"markdown"`)
+
+**No Python changes** — CORS already `allow_origins=["*"]`
+
+**Verify:** `devmemory serve` → F5 in VSCode → Extension Dev Host → select code → run "DevMemory: Ask"
+
+---
 
 ### 7.6 Web UI (Svelte)
-Local web dashboard with:
-- Search bar
-- Memory timeline (browse by date)
-- Chat window (RAG interface)
-- Context viewer
-- Memory stats and graphs
 
-### 7.7 Intent Classification *(moved to Phase 5.A — rule-based, no LLM)*
+Local SPA at `http://localhost:7711/ui` with 5 tabs: Search, Timeline, Chat (RAG), Context, Stats.
 
-> **Pulled forward.** A lightweight rule-based intent classifier now lives in `core/intent_classifier.py` (Phase 5.A) — no LLM needed. Phase 7.7 can be revisited later for ML-based intent classification if needed.
+**New directory: `ui/`** (Svelte + Vite, independent project)
+```
+ui/src/
+  App.svelte              # tab navigation
+  lib/api.ts              # search(), getContext(), askRAG(), getStats(), getTimeline()
+  lib/stores.ts           # Svelte writable stores
+  routes/
+    Search.svelte         # search bar + type/repo filters + MemoryCard grid
+    Timeline.svelte       # paginated chronological browser
+    Chat.svelte           # streaming RAG (requires 7.1 /memory/ask endpoint)
+    Context.svelte        # context viewer with copy button
+    Stats.svelte          # Chart.js type breakdown
+  components/
+    MemoryCard.svelte     # type badge, summary, repo, importance
+```
+
+**New Python API routes:**
+- `api/routes/stats.py` — `GET /memory/stats` → `{total, by_type: {type: count}}` via `store.get_all()`
+- `api/routes/timeline.py` — `GET /memory/timeline?limit&offset` → paginated time-sorted memories
+- `api/routes/ask.py` — `POST /memory/ask` (requires 7.1) → `StreamingResponse` wrapping `RAGEngine.ask()`
+
+**Modified Python files:** `api/server.py` (include 3 new routers; mount `ui/dist/` as `StaticFiles` at `/ui`), `pyproject.toml` (add `ui = ["fastapi>=0.100", "uvicorn[standard]>=0.20", "aiofiles"]`)
+
+**Verify:**
+```bash
+cd ui && npm install && npm run build
+devmemory serve
+# http://localhost:7711/ui → Search, Timeline, Stats tabs
+```
+
+---
+
+### 7.7 ML Intent Classifier
+
+Drop-in ML upgrade for `core/intent_classifier.py`. `SGDClassifier` on TF-IDF features, confidence-gated fallback to rule-based.
+
+**New files:**
+- `core/ml_intent_classifier.py` — `MLIntentClassifier`: `load() -> bool`, `train(labels_path) -> int`, `classify(query) -> (label, confidence)`. Model persisted at `~/.config/devmemory/intent_model.pkl`. `classify_intent_ml(query, confidence_threshold=0.6)` — falls back to rule-based if model not loaded or confidence < threshold
+- `data/intent_labels.jsonl` — ≥200 hand-labeled examples, ≥40 per class (debug/recall/architecture/implementation/general). Format: `{"query": "...", "intent": "debug"}`
+- `cli/commands/train_cmd.py` — `devmemory train-intent [--labels PATH] [--eval/--no-eval]`
+
+**Modified files:** `core/context_engine.py` (swap classifier: `try: from core.ml_intent_classifier import classify_intent_ml as _classify / except ImportError: from core.intent_classifier import classify_intent as _classify`), `pyproject.toml` (add `ml = ["scikit-learn>=1.3"]`)
+
+**Reuses:** `INTENT_RULES` dict from `core/intent_classifier.py` — ML label maps to same routing params
+
+**Verify:**
+```bash
+uv pip install -e ".[ml]"
+devmemory train-intent  # "Trained on N examples. CV accuracy: ~87%"
+```
+
+---
 
 ### 7.8 Codebase Map Generation
-Use embeddings to automatically cluster files and modules. Generate a visual map: `Auth → Database → API → Frontend`.
 
-### 7.9 Agent Mode
+`devmemory map` clusters `git_diff` memories by their stored 384-dim vectors (no re-embedding), builds a weighted adjacency graph (edges = commits touching both clusters), outputs ASCII + JSON.
+
+**New files:**
+- `core/codebase_map.py` — `generate_map(store, min_cluster_size=3, n_clusters=None, output_format="json") -> dict`. Uses `store.get_all()` — reads stored vectors directly from LanceDB (key efficiency win, zero re-embedding). `_auto_cluster_count()` maximises silhouette score over k=3..15. `KMeans` on L2-normalised vectors. `_dominant_prefix()` labels cluster by most common `Path(f).parts[0]`. `_build_edges()` weights = commits touching files in both clusters (filters weight < 2). `_render_ascii()` adjacency list with `↔` arrows
+- `cli/commands/map_cmd.py` — `devmemory map [--output json|ascii|both] [--min-cluster N] [--clusters K] [--save PATH]`
+
+**Modified files:** `cli/main.py` (register `map` inside `try/except ImportError` for `[ml]`). Reuses `[ml]` extra from 7.7 — no additional deps.
+
+**Verify:**
 ```bash
-devmemory plan "add websocket multiplayer"
+devmemory ingest --source diff  # 7.4 needed for git_diff memories
+devmemory map --output ascii
+devmemory map --output json --save map.json
 ```
-Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
+
+---
+
+### 7.9 Agent Mode (`devmemory plan`)
+
+`devmemory plan "add websocket multiplayer"` → `git diff HEAD` + relevant memories + LLM → streamed numbered implementation plan, saved as memory.
+
+**Hard dependency: Phase 7.1 must be implemented first.**
+
+**New files:**
+- `core/plan_engine.py` — `PlanEngine(store, backend)`: `generate_plan(task, repo_path=".", repo, include_diff=True, max_context_tokens=3500, stream=True) -> (plan_str, metadata_dict)`. Step 1: `git diff HEAD` via subprocess truncated to 2000 chars (same pattern as `cli/commands/suggest.py`). Step 2: `ContextEngine.build(intent="implementation")`. Step 3: `_build_plan_prompt()` = system prompt + diff section + memory section + "Plan:". Step 4: `backend.complete()`. Returns `(plan_text, {memories_used, diff_lines, tokens_estimated})`
+- `cli/commands/plan.py` — `plan(task, repo, no_diff, save, stream)`. Renders with Rich `Markdown`. Saves via `RAGEngine.save_answer()` from 7.2.
+
+**Modified files:** `cli/main.py` (register inside `try/except ImportError` for `[llm]`)
+
+**Reuses:** `LLMBackend`/`get_backend()`/`get_llm_config()` (7.1), `ContextEngine.build()`, `RAGEngine.save_answer()` (7.2), git diff subprocess from `cli/commands/suggest.py`
+
+**Verify:**
+```bash
+devmemory plan "add rate limiting to the API"
+# Streamed numbered plan referencing past memories + git diff context
+devmemory search "rate limiting" --type agent_solution  # plan saved
+```
+
+---
+
+### Phase 7 Summary
+
+| Phase | New Files | Modified Files | New Dep | Depends On |
+|---|---|---|---|---|
+| 7.1 | `core/llm_backend.py`, `core/rag_engine.py`, `cli/commands/ask.py` | `core/config.py`, `cli/main.py`, `pyproject.toml` | `[llm]` (httpx) | — |
+| 7.2 | — | `core/rag_engine.py`, `cli/commands/ask.py` | — | 7.1 |
+| 7.3 | `core/hooks.py`, `cli/commands/hook_cmd.py` | `cli/main.py` | — | — |
+| 7.4 | `connectors/diff_connector.py` | `connectors/registry.py`, `core/intent_classifier.py` | — | — |
+| 7.5 | `vscode-extension/src/*.ts`, `package.json` | — | TypeScript only | Phase 4B |
+| 7.6 | `ui/src/**`, `api/routes/{ask,stats,timeline}.py` | `api/server.py`, `pyproject.toml` | `[ui]` (aiofiles) | Phase 4B; 7.1 for chat |
+| 7.7 | `core/ml_intent_classifier.py`, `data/intent_labels.jsonl`, `cli/commands/train_cmd.py` | `core/context_engine.py`, `pyproject.toml` | `[ml]` (scikit-learn) | — |
+| 7.8 | `core/codebase_map.py`, `cli/commands/map_cmd.py` | `cli/main.py` | reuses `[ml]` | 7.4 recommended |
+| 7.9 | `core/plan_engine.py`, `cli/commands/plan.py` | `cli/main.py` | reuses `[llm]` | 7.1, 7.2 |
 
 ---
 
@@ -3890,7 +4087,15 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | **Later** | 2.8, 2.10 | Copilot, Browser connectors | 1 day each | |
 | **Later** | 5.2 | File Watcher (watchdog → filesystem events → auto-ingest) | 1 day | |
 | **Deferred** | 3.2f–3.2i | tag, pin, audit, export commands | — | |
-| **Future** | 7.x | Local LLM (Ollama), VSCode extension, Web UI, Agent Mode | — | |
+| **Future** | 7.3 | Git Hook Integration (`devmemory hook install/uninstall/status`) | half day | |
+| **Future** | 7.4 | Semantic Diff Awareness (`DiffConnector`, `git_diff` memory type) | 1 day | |
+| **Future** | 7.7 | ML Intent Classifier (SGDClassifier + TF-IDF, confidence-gated fallback) | 1 day | |
+| **Future** | 7.1 | Local LLM / RAG (`devmemory ask`, Ollama/llama.cpp, `[llm]` extra) | 2 days | |
+| **Future** | 7.2 | Memory Feedback Loop (save Q&A answers back as agent_solution memories) | half day | |
+| **Future** | 7.8 | Codebase Map Generation (`devmemory map`, KMeans on stored vectors) | 1 day | |
+| **Future** | 7.9 | Agent Mode (`devmemory plan`, git diff + memories + LLM) | 1 day | |
+| **Future** | 7.5 | VSCode Extension (TypeScript, zero runtime deps, talks to REST API) | 2 days | |
+| **Future** | 7.6 | Web UI (Svelte SPA at /ui, 5 tabs, 3 new API routes) | 3 days | |
 
 **Explicitly deprioritized from old order:**
 - `tag`, `pin`/`unpin`, `audit` commands — not on either primary goal track
