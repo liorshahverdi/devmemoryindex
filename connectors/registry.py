@@ -1,9 +1,9 @@
 from connectors.git_connector import GitConnector
+from connectors.claude_connector import ClaudeConnector
 # Connectors added here as each Phase 2.x is implemented:
 # from connectors.terminal_connector import TerminalConnector
 # from connectors.filesystem_connector import FilesystemConnector
 # from connectors.markdown_connector import MarkdownConnector
-# from connectors.claude_connector import ClaudeConnector
 # from connectors.copilot_connector import CopilotConnector
 # from connectors.browser_connector import BrowserConnector
 
@@ -14,6 +14,7 @@ from connectors.git_connector import GitConnector
 # Running it on a schedule records silence, noise, and other people's speech.
 ALL_CONNECTORS = [
     GitConnector,
+    ClaudeConnector,
     # TerminalConnector,
     # FilesystemConnector,
     # MarkdownConnector,

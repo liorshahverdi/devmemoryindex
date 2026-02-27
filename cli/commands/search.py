@@ -18,11 +18,10 @@ def _record_and_transcribe(duration: int = 8) -> tuple[str, float]:
 
     sample_rate = 16000
 
-    console.print(f"[bold green]Listening...[/bold green] [dim]({duration}s)[/dim]")
-    for remaining in range(duration, 0, -1):
+    for remaining in range(3, 0, -1):
         console.print(f"  [dim]{remaining}[/dim]", end="\r")
         time.sleep(1)
-    console.print()
+    console.print(f"[bold green]Recording...[/bold green] [dim]({duration}s)[/dim]")
 
     audio = sd.rec(
         duration * sample_rate,

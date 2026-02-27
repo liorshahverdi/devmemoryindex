@@ -12,6 +12,7 @@ dependencies = [
 devmemory = "cli.main:app"
 
 [project.optional-dependencies]
+mcp = ["mcp[server]>=1.0"]
 voice = [
     "openai-whisper",
     "sounddevice",
@@ -35,4 +36,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["core", "api", "cli", "connectors", "daemon"]
+packages = ["core", "api", "cli", "connectors", "daemon", "mcp_server"]

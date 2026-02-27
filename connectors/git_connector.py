@@ -38,7 +38,7 @@ class GitConnector(Connector):
             parts = line.split("|", 3)
             if len(parts) < 4:
                 continue
-            sha, msg, author, ts = parts
+            sha, subject, author, ts = parts
 
             mem_id = hashlib.sha256(
                 (sha + repo_name).encode()
@@ -46,6 +46,13 @@ class GitConnector(Connector):
 
             if self.store.exists(mem_id):
                 continue
+
+            # Fetch full commit body (bullet points, extended description)
+            body_result = subprocess.run(
+                ["git", "-C", path, "log", "-1", "--format=%b", sha],
+                capture_output=True, text=True
+            )
+            body = body_result.stdout.strip() if body_result.returncode == 0 else ""
 
             # Get diff stat for richer context
             diff_result = subprocess.run(
@@ -55,22 +62,23 @@ class GitConnector(Connector):
             diff_summary = diff_result.stdout.strip()[:500] if diff_result.returncode == 0 else ""
 
             raw_text = self._redact(
-                f"{msg}\n\nAuthor: {author}\nFiles changed:\n{diff_summary}"
+                f"{subject}\n\n{body}\n\nAuthor: {author}\nFiles changed:\n{diff_summary}".strip()
             )
 
             memory = Memory(
                 id=mem_id,
                 type="git_commit",
-                summary=msg[:200],
+                summary=subject[:200],
                 raw_text=raw_text,
                 source=sha,
                 repo=repo_name,
                 timestamp=datetime.fromtimestamp(int(ts)),
                 tags=["git"],
-                importance=self._estimate_importance(msg),
+                importance=self._estimate_importance(subject),
             )
 
-            vector = embed(memory.summary)
+            embed_text = f"{subject}\n{body}".strip() if body else subject
+            vector = embed(embed_text[:512])
             self.store.add(memory, vector)
             count += 1
 
@@ -85,5 +93,5 @@ class GitConnector(Connector):
         if any(word in msg_lower for word in ["refactor", "clean", "rename"]):
             return 0.5
         if any(word in msg_lower for word in ["docs", "readme", "comment"]):
-            return 0.3
+            return 0.5
         return 0.5

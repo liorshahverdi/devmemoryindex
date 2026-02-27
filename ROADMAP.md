@@ -14,9 +14,9 @@
 |---|---|---|
 | `core/schema.py` — Memory dataclass | **Done** | id, type, summary, raw_text, source, repo, timestamp, tags, importance |
 | `core/embeddings.py` — BAAI/bge-small-en (384d) | **Done** | `embed()` and `embed_batch()` working |
-| `core/memory_store.py` — MemoryStore class | **Done** | `add()`, `semantic_search()`, `hybrid_search()`, `delete()`, `count()`, `get_all()`, `exists()`, `reinforce()`, `truncate()`. Uses `compute_score` from ranking module. |
+| `core/memory_store.py` — MemoryStore class | **Done** | `add()`, `semantic_search()`, `hybrid_search()`, `delete()`, `count()`, `get_all()`, `exists()`, `reinforce()`, `truncate()`. Uses `compute_score` from ranking module. `reinforce()` capped at 0.8 (not 1.0), boost=0.02. Keyword search extended to `raw_text` OR `summary`. Reinforce gated on similarity >= 0.7. |
 | `core/store_provider.py` — Singleton factory | **Done** | `get_store()` returns shared `MemoryStore` instance |
-| `core/ranking.py` — Scoring formula | **Done** | `recency_score()`, `compute_score()` — weights: similarity 0.6, importance 0.25, recency 0.15 |
+| `core/ranking.py` — Scoring formula | **Done** | `recency_score()`, `compute_score()` — weights: similarity 0.75, importance 0.15, recency 0.10 (revised: semantic similarity given more weight to prevent high-importance unrelated results dominating) |
 | `core/privacy.py` — Redaction filter | **Done** | `redact()` — strips API keys, bearer tokens, base64 blobs, SSNs, emails. Hooked into `connectors/base.py` via `_redact()`. |
 | `core/tests/test_privacy.py` | **Done** | 4 tests — API key redaction, bearer token strip, clean text passthrough, end-to-end store test. All passing. |
 | `core/speaker_profile.py` — Speaker identity | **Done** | `enroll()`, `load_profile()`, `is_self()` — cosine distance on pyannote embeddings, threshold 0.3 |
@@ -810,6 +810,12 @@ def get_connectors(names: list[str] | None = None) -> list:
 
 **Status: COMPLETED** — `connectors/git_connector.py` implemented. 3 tests passing. Wired into registry.
 
+**Post-launch fixes:**
+- Commit body (bullet points) now fetched via `git log -1 --format=%b` and stored in `raw_text`. Previously only the subject line was stored, causing body content to be unsearchable.
+- Embedding now built from `subject + body` (up to 512 chars) rather than just the subject, so all bullet-point content is captured in the vector.
+- `docs` commit importance raised from 0.3 → 0.5 (the `docs:` prefix is a conventional label, not an indicator of low significance).
+- `scripts/reset_importance.py` added to clamp drifted importance values back to 0.8.
+
 **File:** `connectors/git_connector.py`
 
 **Purpose:** Capture commit messages, diff summaries, and timestamps as searchable developer decisions.
@@ -1329,7 +1335,7 @@ class ClaudeConnector(Connector):
         return count
 ```
 
-**Note:** The exact file format of Claude Code's local storage may vary. This connector should be adapted once you inspect the actual files in `~/.claude/`. The structure above handles both JSON conversation logs and markdown exports.
+**Actual format (confirmed):** `~/.claude/projects/<project-dir>/<session-uuid>.jsonl`. Each line is one event. Assistant turns: `{"type": "assistant", "message": {"role": "assistant", "content": <str|list>}, "cwd": "...", "timestamp": "..."}`. Content is a plain string or list of `{"type": "text", "text": "..."}` blocks. Repo derived from `cwd`. Only responses >= 150 chars indexed (skips trivial replies). 89 memories indexed on first run.
 
 **Tests:** Create mock JSON/markdown conversation files, run connector, verify assistant messages are stored with importance 0.9.
 
@@ -2286,7 +2292,7 @@ class BrowserConnector(Connector):
 
 ## Phase 3 — CLI Completions (Human Interface)
 
-> **Status: PARTIALLY DONE** — `search` (inc. `--voice`, `--speak`), `add`, `stats`, `prune`, `dictate`, `voice enroll`, `ingest`, `config`, `context`, `suggest` complete. Next: 3.D (`repl`, `export`/`import`, `daemon`).
+> **Status: COMPLETE** — All commands done: `search` (inc. `--voice`, `--speak`), `add`, `stats`, `prune`, `dictate`, `voice enroll`, `ingest`, `config`, `context`, `suggest`, `daemon`, `export`, `import`, `repl`.
 >
 > **Revised subphase structure:**
 > - **3.A** — `devmemory context`: wrap `ContextEngine.build()` as CLI command. Zero new architecture.
@@ -2918,7 +2924,7 @@ devmemory prune --floor 0.1 --age 60    # stricter thresholds
 
 ## Phase 4A — MCP Server (Local Agent Interface)
 
-> **Status: NOT STARTED** — Highest-priority agent interface. MCP is how Claude Code calls tools natively — stdio transport, no HTTP, no persistent server process required. Build this before the REST API.
+> **Status: COMPLETED** — `mcp_server/` package implemented with 3 tools. `.mcp.json` created. Install: `uv pip install mcp>=1.0`. Note: directory named `mcp_server/` (not `mcp/`) to avoid shadowing the `mcp` PyPI package.
 >
 > **Why MCP before REST:** An agent calling `memory_search` via MCP requires zero server setup. The MCP server is spawned on-demand by Claude Code. REST requires a persistent `uvicorn` process and port management. For same-machine agent integration, MCP is strictly better.
 >
@@ -2926,13 +2932,13 @@ devmemory prune --floor 0.1 --age 60    # stricter thresholds
 
 ### 4A.1 MCP Server Setup
 
-**New directory:** `mcp/`
+**Directory:** `mcp_server/` (named `mcp_server/` not `mcp/` to avoid shadowing the `mcp` PyPI package)
 
 ```
-mcp/
+mcp_server/
 ├── __init__.py
-├── server.py     # FastMCP entrypoint + tool definitions + instructions
-└── tools.py      # Implementation wrapping core/ modules
+├── server.py     # FastMCP entrypoint, tool registration, module-level setup docs
+└── tools.py      # Tool implementations wrapping core/ modules, full docstrings
 ```
 
 **New optional dependency:**
@@ -3064,20 +3070,27 @@ def remember_memory(
 
 ### 4A.2 Claude Code Integration
 
-**Project-local MCP config** (`.mcp.json` in project root):
+**Project-local MCP config** (`.mcp.json` in project root — committed):
 ```json
 {
   "mcpServers": {
     "devmemory": {
       "command": "uv",
-      "args": ["run", "python", "-m", "mcp.server"],
-      "cwd": "/absolute/path/to/devmemoryindex"
+      "args": ["run", "python", "-m", "mcp_server.server"],
+      "cwd": "/Users/lshahverdi/projects/devmemoryindex"
     }
   }
 }
 ```
 
-**Verification:** After setup, run `/mcp` in Claude Code — `devmemory` should appear as active with 3 tools: `memory_search`, `memory_context`, `memory_remember`.
+**Registration command** (project-local, stored in `.claude/settings.json`):
+```bash
+claude mcp add devmemory -s local -- uv run python -m mcp_server.server
+```
+
+**Verification:** Run `/mcp` in Claude Code — `devmemory` appears as connected with 3 tools. Confirmed working ✅
+
+**Status:** DONE — Claude Code can call all three tools natively. `memory_remember` verified: solutions persisted in one session are searchable via CLI (`devmemory search`) in subsequent sessions.
 
 **MCP vs REST comparison:**
 
@@ -3757,9 +3770,9 @@ Uses memory + repo knowledge + LLM to generate a multi-step implementation plan.
 | ~~Done~~ | 3.A | `devmemory context` command (ContextEngine already done, just wire CLI) | — | ✅ |
 | ~~Done~~ | 3.B | `devmemory suggest` command (git diff → ContextEngine, zero new deps) | — | ✅ |
 | ~~Done~~ | 3.C | Enhanced `search --voice` (8s, quality gate, confirmation display, --speak) | — | ✅ |
-| **Now** | 3.D | `repl`, `export`/`import`, `daemon` CLI commands | 2 hours | |
-| **Week 1** | 4A | MCP Server — `memory_search`, `memory_context`, `memory_remember` tools | 2–3 days | |
-| **Week 1** | 2 (Claude first) | Claude Code Connector (past solutions = highest-value memories) | 1 day | |
+| ~~Done~~ | 3.D | `repl`, `export`/`import`, `daemon` CLI commands | — | ✅ |
+| ~~Done~~ | 4A | MCP Server — `memory_search`, `memory_context`, `memory_remember` tools | — | ✅ |
+| ~~Done~~ | 2 (Claude) | Claude Code Connector (past solutions = highest-value memories) | — | ✅ |
 | **Week 1–2** | 2 (Terminal) | Terminal Connector | half day | |
 | **Week 2** | 5.A | Intent Classifier — rule-based keyword routing into ContextEngine | 1 day | |
 | **Week 2** | 2 (Markdown) | Markdown Connector (great for voice recall queries) | half day | |

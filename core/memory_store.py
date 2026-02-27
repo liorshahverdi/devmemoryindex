@@ -68,7 +68,7 @@ class MemoryStore:
             )
             if not results:
                 return
-            new_importance = min(1.0, results[0].get("importance", 0.5) + boost)
+            new_importance = min(0.8, results[0].get("importance", 0.5) + boost)
             self.collection.update(
                 where=f"id = '{memory_id}'",
                 values={"importance": new_importance},
@@ -92,7 +92,7 @@ class MemoryStore:
             keyword_results = (
                 self.collection
                 .search()
-                .where(f"summary LIKE '%{safe_query}%'")
+                .where(f"summary LIKE '%{safe_query}%' OR raw_text LIKE '%{safe_query}%'")
                 .limit(50)
                 .to_list()
             )
@@ -108,9 +108,11 @@ class MemoryStore:
         # 4. Score and rank
         ranked = sorted(combined.values(), key=compute_score, reverse=True)
 
-        # 5. Reinforce retrieved memories (access-aware importance)
+        # 5. Reinforce only memories with strong semantic similarity (>= 0.7)
+        # — prevents low-relevance results from drifting upward on repeated searches
         for r in ranked[:k]:
-            self.reinforce(r["id"], boost=0.05)
+            if (1 - r.get("_distance", 1.0)) >= 0.7:
+                self.reinforce(r["id"], boost=0.02)
 
         return ranked[:k]
 
