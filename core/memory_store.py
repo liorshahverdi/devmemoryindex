@@ -140,7 +140,23 @@ class MemoryStore:
                 r["_distance"] = 0.0
 
         # 4. Score and rank
-        ranked = sorted(combined.values(), key=compute_score, reverse=True)
+        scored = list(combined.values())
+        for r in scored:
+            r["_score"] = compute_score(r)
+
+        # Deprioritize failure_note results unless the query signals negative intent.
+        _NEGATIVE_KEYWORDS = {
+            "avoid", "failed", "broken", "didn't work", "not work",
+            "mistake", "wrong", "don't", "shouldn't", "error", "bug",
+        }
+        query_lower = query.lower()
+        negative_intent = any(kw in query_lower for kw in _NEGATIVE_KEYWORDS)
+        if not negative_intent:
+            for r in scored:
+                if r.get("type") == "failure_note":
+                    r["_score"] *= 0.4
+
+        ranked = sorted(scored, key=lambda r: r["_score"], reverse=True)
 
         top = ranked[:k]
 

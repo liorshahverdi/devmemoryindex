@@ -6,14 +6,18 @@ Their docstrings are what Claude sees as the tool description — keep them
 precise and action-oriented.
 
 Tool summary:
-  search_memories  — hybrid search (semantic + keyword) over the memory store
-  build_context    — returns a formatted context block ready to paste into a prompt
-  remember_memory  — persists a solution/decision so it's findable in future sessions
-  get_memory       — fetch a single memory by ID (use to resolve related[] from search results)
+  search_memories      — hybrid search (semantic + keyword) over the memory store
+  build_context        — returns a formatted context block ready to paste into a prompt
+  remember_memory      — persists a solution/decision so it's findable in future sessions
+  get_memory           — fetch a single memory by ID (use to resolve related[] from search results)
+  get_session_context  — call once at session start to bootstrap context from task + git state
+  remember_failure     — record a failed approach so future sessions don't repeat the same mistake
 """
 
 import hashlib
+import subprocess
 from datetime import datetime
+from pathlib import Path
 
 from core.store_provider import get_store
 from core.embeddings import embed
@@ -179,3 +183,86 @@ def get_memory(memory_id: str) -> dict | None:
         "tags": record.get("tags", []),
         "timestamp": str(record.get("timestamp")),
     }
+
+
+def _git_signals() -> str:
+    """Return modified file stems + recent commit subjects as extra query terms."""
+    signals = []
+    try:
+        status = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True, text=True, timeout=3
+        ).stdout
+        for line in status.splitlines():
+            # " M core/memory_store.py" → "memory_store"
+            path = line.strip().split()[-1]
+            signals.append(Path(path).stem)
+    except Exception:
+        pass
+    try:
+        log = subprocess.run(
+            ["git", "log", "--oneline", "-3"],
+            capture_output=True, text=True, timeout=3
+        ).stdout
+        signals.append(log.strip())
+    except Exception:
+        pass
+    return " ".join(signals)
+
+
+def get_session_context(task_description: str, repo: str | None = None) -> str:
+    """Call once at session start to surface relevant past context before writing any code.
+
+    Combines the task description with current git state (modified files, recent commits)
+    to pull the most relevant memories without requiring a precise query.
+
+    Args:
+        task_description: What you're about to work on, in plain language.
+        repo:             Optional repo filter.
+
+    Returns:
+        Formatted <context>...</context> block ready to prepend to your working context.
+    """
+    git_extra = _git_signals()
+    enriched_query = f"{task_description} {git_extra}".strip()
+    store = get_store()
+    engine = ContextEngine(store)
+    result = engine.build(query=enriched_query, repo=repo, max_tokens=3000, format="claude")
+    return result["context_text"]
+
+
+def remember_failure(
+    summary: str,
+    what_was_tried: str,
+    why_it_failed: str,
+    repo: str | None = None,
+) -> dict:
+    """Record a failed approach so future sessions don't repeat the same mistake.
+
+    Args:
+        summary:        One sentence: what was attempted and that it failed.
+        what_was_tried: The approach, command, or code that was tried.
+        why_it_failed:  The error, reason, or consequence.
+        repo:           Repository this applies to.
+
+    Returns:
+        {"status": "ok"|"duplicate", "id": "..."}
+    """
+    store = get_store()
+    raw = f"ATTEMPTED: {what_was_tried}\n\nWHY IT FAILED: {why_it_failed}"
+    mem_id = hashlib.sha256(raw[:500].encode()).hexdigest()
+    if store.exists(mem_id):
+        return {"status": "duplicate", "id": mem_id}
+    memory = Memory(
+        id=mem_id,
+        type="failure_note",
+        summary=summary[:200],
+        raw_text=raw,
+        source="mcp_agent",
+        repo=repo,
+        timestamp=datetime.utcnow(),
+        tags=["attempted", "failed", "avoid"],
+        importance=0.7,
+    )
+    store.add(memory, embed(memory.summary))
+    return {"status": "ok", "id": mem_id}
