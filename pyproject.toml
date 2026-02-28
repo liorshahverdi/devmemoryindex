@@ -17,6 +17,7 @@ mcp = ["mcp[server]>=1.0"]
 watch = ["watchdog>=3.0"]
 ml = ["scikit-learn>=1.3"]
 llm = ["httpx>=0.27"]
+speak = ["edge-tts>=6.1"]
 voice = [
     "openai-whisper",
     "sounddevice",

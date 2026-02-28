@@ -13,6 +13,7 @@ def ask(
     no_stream: bool = typer.Option(False, "--no-stream", help="Collect full answer before printing."),
     save: bool = typer.Option(False, "--save", "-s", help="Save the answer as an agent_solution memory."),
     voice: bool = typer.Option(False, "--voice", help="Speak your question instead of typing."),
+    speak: bool = typer.Option(False, "--speak", help="Read the answer aloud (British accent, synced to stream)."),
 ):
     """Ask a question — retrieves memories, generates a cited answer via local LLM."""
     if voice:
@@ -55,16 +56,29 @@ def ask(
             _print_hint()
             raise typer.Exit(1)
         console.print(Markdown(answer))
+        if speak:
+            from cli.commands._speak import StreamingSpeaker
+            speaker = StreamingSpeaker()
+            speaker.feed(answer)
+            speaker.finish()
     else:
         from rich.live import Live
 
         chunks: list[str] = []
         answer = ""
+        speaker = None
+        if speak:
+            from cli.commands._speak import StreamingSpeaker
+            speaker = StreamingSpeaker()
         try:
             with Live("", console=console, refresh_per_second=15) as live:
                 for chunk in engine.ask(query, repo=repo, type_filter=memory_type, stream=True):
                     chunks.append(chunk)
                     live.update("".join(chunks))
+                    if speaker:
+                        speaker.feed(chunk)
+            if speaker:
+                speaker.finish()  # flush remainder, block until audio drains
             answer = "".join(chunks)
         except Exception as e:
             console.print(f"\n[red]LLM error: {e}[/red]")
