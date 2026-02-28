@@ -41,8 +41,8 @@ def _keyword_where(query: str) -> str:
     terms = [w for w in words if w not in _STOPWORDS and len(w) >= 3]
 
     if not terms:
-        safe = query.replace("'", "''")
-        return f"summary LIKE '%{safe}%' OR raw_text LIKE '%{safe}%'"
+        safe = query.lower().replace("'", "''")
+        return f"LOWER(summary) LIKE '%{safe}%' OR LOWER(raw_text) LIKE '%{safe}%'"
 
     # Deduplicate while preserving order, cap to avoid huge WHERE clauses.
     seen: set[str] = set()
@@ -55,8 +55,8 @@ def _keyword_where(query: str) -> str:
 
     parts = []
     for term in unique_terms:
-        safe = term.replace("'", "''")
-        parts.append(f"summary LIKE '%{safe}%' OR raw_text LIKE '%{safe}%'")
+        safe = term.replace("'", "''")  # terms are already lowercased
+        parts.append(f"LOWER(summary) LIKE '%{safe}%' OR LOWER(raw_text) LIKE '%{safe}%'")
     return " OR ".join(parts)
 
 
@@ -274,10 +274,27 @@ class MemoryStore:
 
         # 3. Merge and deduplicate by id
         # Semantic results carry _distance from vector search.
-        # Keyword results contain the exact query term — they should rank high
-        # regardless of their embedding distance. Set _distance=0.0 for all
-        # keyword matches (both keyword-only and those already in semantic pool)
-        # so that an exact text match always gets maximum semantic score.
+        # Keyword hits get a synthetic distance based on term-match ratio:
+        # a memory matching all query terms gets distance=0.0 (perfect),
+        # one matching only 1 of 3 terms gets distance=0.67.
+        # This prevents the common failure where a generic term like "connector"
+        # causes many loosely-related memories to tie at distance=0.0 and then
+        # sort purely by recency, burying the specific commit that matches all terms.
+        import re as _re
+        _query_terms = [
+            w for w in _re.findall(r"\w+", query.lower())
+            if w not in _STOPWORDS and len(w) >= 3
+        ][:6]
+
+        def _term_match_distance(memory: dict) -> float:
+            if not _query_terms:
+                return 0.0
+            text = (
+                (memory.get("summary") or "") + " " + (memory.get("raw_text") or "")
+            ).lower()
+            matched = sum(1 for t in _query_terms if t in text)
+            return max(0.0, 1.0 - matched / len(_query_terms))
+
         keyword_ids = {r["id"] for r in keyword_results}
         combined = {r["id"]: r for r in semantic_results}
         for r in keyword_results:
@@ -285,7 +302,11 @@ class MemoryStore:
                 combined[r["id"]] = r
         for r in combined.values():
             if r["id"] in keyword_ids:
-                r["_distance"] = 0.0
+                kw_dist = _term_match_distance(r)
+                # Only override if keyword match gives a better (lower) distance
+                # than the semantic result's own distance.
+                if kw_dist < r.get("_distance", 1.0):
+                    r["_distance"] = kw_dist
 
         # 4. Score and rank
         scored = list(combined.values())

@@ -40,7 +40,7 @@ class RAGEngine:
         query: str,
         repo: str | None = None,
         type_filter: str | None = None,
-        max_context_tokens: int = 3000,
+        max_context_tokens: int = 1500,
         stream: bool = True,
         plan: bool = True,
     ):
@@ -92,7 +92,9 @@ class RAGEngine:
             summary = m.get("summary", "")
             raw = (m.get("raw_text") or "")[:2000]
             body = raw if raw else summary
-            lines.append(f"[MEMORY-{i}] {summary}\n{body}")
+            ts = m.get("timestamp")
+            ts_str = f"\nDate: {str(ts)[:10]}" if ts else ""
+            lines.append(f"[MEMORY-{i}] {summary}{ts_str}\n{body}")
         return "\n\n---\n\n".join(lines)
 
     def save_answer(
