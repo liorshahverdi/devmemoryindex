@@ -84,6 +84,8 @@
 | `cli/commands/serve.py` — `--no-auth` flag | **Done** | Disables key enforcement even if a key is configured. Passes `auth_enabled=False` → sets `DEVMEMORY_NO_AUTH=1`. |
 | `cli/commands/get_cmd.py` | **Done** | `devmemory get <id-or-prefix>` — exact + prefix-scan lookup, metadata panel + raw_text panel. |
 | `cli/commands/search.py` — ID column | **Done** | Search results table now includes an 8-char ID prefix column for quick copy-paste into `devmemory get`. |
+| `core/hooks.py` | **Done** | `install_hook()`, `uninstall_hook()`, `hook_status()` — safe append/strip with marker block, `chmod +x`. |
+| `cli/commands/hook_cmd.py` | **Done** | `devmemory hook install/uninstall/status` — defaults to cwd, falls back to all configured repos for status. |
 
 **All connectors implemented:**
 - `connectors/` — git, claude, terminal, markdown, voice, filesystem, copilot, browser, meeting — all done ✅
@@ -91,8 +93,8 @@
 - `api/auth.py` — optional API key auth done ✅
 
 **What's next:**
-1. **Phase 6.7** — Multi-project namespace
-2. **Phase 7** — RAG (`devmemory ask`), git hook integration, VSCode extension, web UI
+1. **Phase 7.4** — Semantic diff awareness (`DiffConnector`, query code changes directly)
+2. **Phase 7.1** — Local LLM / RAG (`devmemory ask`)
 
 ---
 
@@ -3842,11 +3844,9 @@ Summarize old, low-importance memories into condensed versions. Store both origi
 
 ### 6.6 Context Caching *(moved to Phase 5.B)*
 
-### 6.7 Multi-Project Namespace
-Add a `project` field to Memory schema. Allow queries scoped to a project:
-```bash
-devmemory search "auth" --project api-gateway
-```
+### 6.7 Multi-Project Namespace ✅ *(already implemented as `--repo`)*
+
+Repo-scoped search was built as part of Phase 4B / hybrid_search. The `repo` field on the Memory schema, `--repo` CLI flag, `repo_filter` in `hybrid_search()`, and `repo=` in the MCP tool cover this entirely. No separate `project` field needed.
 
 ---
 
@@ -3912,7 +3912,14 @@ devmemory search "dedup job" --type agent_solution  # returns saved answer
 
 ---
 
-### 7.3 Git Hook Integration
+### 7.3 Git Hook Integration ✅
+
+**Status: COMPLETED**
+
+**Files:**
+- `core/hooks.py` — `install_hook()`, `uninstall_hook()`, `hook_status()`. Appends/strips a marked block safely; never clobbers existing hook content. Sets `chmod +x`.
+- `cli/commands/hook_cmd.py` — `devmemory hook install/uninstall/status`
+- `core/tests/test_hooks.py` — 15 tests. All passing.
 
 Installs a `post-commit` hook so every `git commit` immediately calls `devmemory ingest --source git &`. No daemon poll delay.
 

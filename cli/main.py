@@ -75,5 +75,9 @@ app.command()(log)
 from cli.commands.get_cmd import get
 app.command()(get)
 
+# Phase 7.3 — git hook integration
+from cli.commands.hook_cmd import app as hook_app
+app.add_typer(hook_app, name="hook")
+
 if __name__ == "__main__":
     app()
