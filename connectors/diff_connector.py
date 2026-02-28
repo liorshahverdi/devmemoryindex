@@ -1,5 +1,6 @@
 import subprocess
 import hashlib
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -11,21 +12,24 @@ from connectors.base import Connector
 # Skip file diffs larger than this — likely minified/generated files
 _MAX_FILE_DIFF_CHARS = 8000
 
+# TEMP: set to True to print per-step timing to stderr
+_DIAG = True
+
+
+def _t(label: str, start: float) -> float:
+    now = time.perf_counter()
+    if _DIAG:
+        import sys
+        print(f"  [diff diag] {label}: {now - start:.3f}s", file=sys.stderr, flush=True)
+    return now
+
 
 class DiffConnector(Connector):
-    """Indexes per-file code diffs as git_diff memories.
-
-    Unlike GitConnector (which indexes commit messages), DiffConnector indexes
-    the actual line-level changes so you can search by *what changed*, not just
-    why. Enables queries like "why did we remove Redis?" or "what touched auth.py?".
-
-    One memory per changed file per commit. Embed text uses only +/- lines
-    (not context) for maximum signal density.
-    """
+    """Indexes per-file code diffs as git_diff memories."""
 
     name = "diff"
 
-    def __init__(self, repo_paths: list[str] | None = None, commit_limit: int = 10):
+    def __init__(self, repo_paths: list[str] | None = None, commit_limit: int = 2):
         super().__init__()
         self.repo_paths = repo_paths or get_git_paths() or ["."]
         self.commit_limit = commit_limit
@@ -37,43 +41,52 @@ class DiffConnector(Connector):
         return count
 
     def _index_repo(self, path: str) -> int:
+        import sys
         count = 0
+        t0 = time.perf_counter()
+
         result = subprocess.run(
             ["git", "-C", path, "log", "--pretty=format:%H|%s|%ct", "-n", str(self.commit_limit)],
             capture_output=True, text=True, timeout=30,
         )
+        t0 = _t(f"git log ({path})", t0)
+
         if result.returncode != 0 or not result.stdout.strip():
             return 0
 
         repo_name = Path(path).resolve().name
+        commits = result.stdout.strip().splitlines()
+        print(f"  [diff diag] repo={repo_name}  commits={len(commits)}", file=sys.stderr, flush=True)
 
-        for line in result.stdout.strip().splitlines():
+        for line in commits:
             parts = line.split("|", 2)
             if len(parts) < 3:
                 continue
             sha, subject, ts = parts
+            t1 = time.perf_counter()
 
-            # --unified=0: no context lines — smaller output, faster git, same signal
-            # since we only embed +/- lines anyway.
             diff_result = subprocess.run(
                 ["git", "-C", path, "diff", "--unified=0", f"{sha}~1", sha],
                 capture_output=True, text=True, timeout=30,
             )
+            t1 = _t(f"  git diff {sha[:8]}", t1)
+
             if diff_result.returncode != 0 or not diff_result.stdout.strip():
                 continue
 
             file_diffs = self._split_diff_by_file(diff_result.stdout)
+            t1 = _t(f"  split ({len(file_diffs)} files, {len(diff_result.stdout)} chars)", t1)
+
             if not file_diffs:
                 continue
 
-            # Batch exists check — one WHERE IN query per commit instead of N queries.
             candidate_ids = [
                 hashlib.sha256(f"{sha}|{repo_name}|{fp}".encode()).hexdigest()
                 for fp, _ in file_diffs
             ]
             existing_ids = self._batch_existing(candidate_ids)
+            t1 = _t(f"  batch_existing ({len(candidate_ids)} ids, {len(existing_ids)} known)", t1)
 
-            # Build memories and embed texts for all new files in one pass.
             new_memories: list[Memory] = []
             embed_texts: list[str] = []
 
@@ -81,12 +94,11 @@ class DiffConnector(Connector):
                 if mem_id in existing_ids:
                     continue
                 if len(file_diff) > _MAX_FILE_DIFF_CHARS:
-                    continue  # skip minified / generated files
+                    continue
 
                 raw_text = self._redact(
                     f"commit: {sha[:8]} — {subject}\nfile: {filepath}\n\n{file_diff}"
                 )
-
                 change_lines = [
                     l for l in file_diff.splitlines()
                     if (l.startswith("+") or l.startswith("-"))
@@ -94,7 +106,6 @@ class DiffConnector(Connector):
                     and not l.startswith("---")
                 ]
                 embed_text = f"{subject} {filepath}\n" + "\n".join(change_lines)
-
                 suffix = Path(filepath).suffix.lstrip(".") or "file"
                 new_memories.append(Memory(
                     id=mem_id,
@@ -109,19 +120,23 @@ class DiffConnector(Connector):
                 ))
                 embed_texts.append(embed_text[:512])
 
+            t1 = _t(f"  build memories ({len(new_memories)} new)", t1)
+
             if not new_memories:
                 continue
 
-            # One embed_batch call per commit instead of one embed() per file.
             vectors = embed_batch(embed_texts)
+            t1 = _t(f"  embed_batch ({len(embed_texts)} texts)", t1)
+
             for memory, vector in zip(new_memories, vectors):
                 self.store.add(memory, vector)
-                count += 1
+            t1 = _t(f"  store.add x{len(new_memories)}", t1)
+
+            count += len(new_memories)
 
         return count
 
     def _batch_existing(self, ids: list[str]) -> set[str]:
-        """Return the subset of ids that already exist in the store."""
         if not ids:
             return set()
         try:
@@ -138,7 +153,6 @@ class DiffConnector(Connector):
             return set()
 
     def _split_diff_by_file(self, diff_text: str) -> list[tuple[str, str]]:
-        """Split a full git diff into (filepath, per_file_diff) pairs."""
         files: list[tuple[str, str]] = []
         current_path: str | None = None
         current_lines: list[str] = []
@@ -147,7 +161,6 @@ class DiffConnector(Connector):
             if line.startswith("diff --git "):
                 if current_path and current_lines:
                     files.append((current_path, "".join(current_lines)))
-                # "diff --git a/foo/bar.py b/foo/bar.py" → "foo/bar.py"
                 parts = line.split(" b/", 1)
                 current_path = parts[1].strip() if len(parts) > 1 else line.strip()
                 current_lines = []
