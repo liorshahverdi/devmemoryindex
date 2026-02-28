@@ -57,18 +57,28 @@ def _quick_route(query: str) -> dict | None:
     if _AVOID_RE.search(query):
         return {"query": query, "type": "failure_note", "reason": "failure or avoidance question"}
     if _CODE_IMPL_RE.search(query):
-        # Prefer a CamelCase identifier; otherwise strip the question prefix/suffix
-        # to get the subject ("how does context engine work" → "context engine").
+        # Prefer an explicit CamelCase identifier in the query (typed input).
+        # For voice input ("how does context engine work"), Whisper produces lowercase,
+        # so synthesize CamelCase + snake_case from the extracted subject words to
+        # give definition files a clear keyword advantage over files that just import them.
         camel = re.search(r"\b([A-Z][a-z]+[A-Z]\w*)\b", query)
         if camel:
             refined = camel.group(1)
         else:
-            refined = re.sub(
+            subject = re.sub(
                 r"^\s*(how does|how do|what does|show me( the)?|explain( the| how)?|"
                 r"walk me through|what is in)\s*", "", query, flags=re.I
             )
-            refined = re.sub(r"\s*(work|do|works?)\s*\??\s*$", "", refined, flags=re.I).strip()
-            refined = refined or query
+            subject = re.sub(r"\s*(work|do|works?)\s*\??\s*$", "", subject, flags=re.I).strip()
+            subject = subject or query
+            words = subject.split()
+            if len(words) > 1:
+                # "context engine" → "ContextEngine context_engine"
+                camel_form = "".join(w.capitalize() for w in words)
+                snake_form = "_".join(w.lower() for w in words)
+                refined = f"{camel_form} {snake_form}"
+            else:
+                refined = subject
         return {"query": refined, "type": "file_content", "reason": "implementation question about named code entity"}
     return None
 

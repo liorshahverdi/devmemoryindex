@@ -289,11 +289,19 @@ class MemoryStore:
         def _term_match_distance(memory: dict) -> float:
             if not _query_terms:
                 return 0.0
-            text = (
-                (memory.get("summary") or "") + " " + (memory.get("raw_text") or "")
-            ).lower()
-            matched = sum(1 for t in _query_terms if t in text)
-            return max(0.0, 1.0 - matched / len(_query_terms))
+            summary_text = (memory.get("summary") or "").lower()
+            raw_text = (memory.get("raw_text") or "").lower()
+            # Summary hits count 2×: a term in the summary is a primary signal
+            # (definition, filename) vs a secondary signal (import, passing reference).
+            # This lets definition files outrank files that merely import the same class.
+            score = 0
+            for t in _query_terms:
+                if t in summary_text:
+                    score += 2
+                elif t in raw_text:
+                    score += 1
+            max_score = len(_query_terms) * 2
+            return max(0.0, 1.0 - score / max_score)
 
         keyword_ids = {r["id"] for r in keyword_results}
         combined = {r["id"]: r for r in semantic_results}
