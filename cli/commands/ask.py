@@ -13,12 +13,13 @@ def ask(
     no_stream: bool = typer.Option(False, "--no-stream", help="Collect full answer before printing."),
     save: bool = typer.Option(False, "--save", "-s", help="Save the answer as an agent_solution memory."),
     voice: bool = typer.Option(False, "--voice", help="Speak your question instead of typing."),
+    voice_duration: int = typer.Option(5, "--voice-duration", help="Recording duration in seconds (default 5)."),
     speak: bool = typer.Option(False, "--speak", help="Read the answer aloud (British accent, synced to stream)."),
 ):
     """Ask a question — retrieves memories, generates a cited answer via local LLM."""
     if voice:
         from cli.commands._voice import transcribe_or_exit
-        text = transcribe_or_exit(duration=8)
+        text = transcribe_or_exit(duration=voice_duration)
         console.print(f'\n[bold cyan]Query (voice):[/bold cyan] {text}\n')
         query = text
     elif query is None:

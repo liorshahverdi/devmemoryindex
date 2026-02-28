@@ -1,5 +1,6 @@
 """Shared voice input utility for CLI commands."""
 
+import os
 from rich.console import Console
 
 console = Console()
@@ -31,7 +32,8 @@ def record_and_transcribe(duration: int = 8) -> tuple[str, float]:
     sd.wait()
 
     audio_f32 = audio.squeeze().astype("float32") / float(32768)
-    model = whisper.load_model("base")
+    whisper_model = os.environ.get("DEVMEMORY_WHISPER_MODEL", "tiny")
+    model = whisper.load_model(whisper_model)
     result = model.transcribe(audio_f32)
 
     text = result["text"].strip()
