@@ -86,6 +86,15 @@
 | `cli/commands/search.py` — ID column | **Done** | Search results table now includes an 8-char ID prefix column for quick copy-paste into `devmemory get`. |
 | `core/hooks.py` | **Done** | `install_hook()`, `uninstall_hook()`, `hook_status()` — safe append/strip with marker block, `chmod +x`. |
 | `cli/commands/hook_cmd.py` | **Done** | `devmemory hook install/uninstall/status` — defaults to cwd, falls back to all configured repos for status. |
+| `core/llm_backend.py` | **Done** | Phase 7.1. `OllamaBackend` (httpx streaming POST `/api/generate`) + `LlamaCppBackend` + `get_backend()` factory. |
+| `core/rag_engine.py` | **Done** | Phase 7.1+7.2. `RAGEngine.ask()` (stream/no-stream, plan, type_filter). `save_answer()` (Q&A → agent_solution). `_format_memories()` 2000-char truncation, newlines preserved. |
+| `core/query_planner.py` | **Done** | Phase 7.1 enhancement. Pre-retrieval LLM call returns `{query, type, reason}`. Validates against `_KNOWN_TYPES`. Falls back silently on failure. |
+| `cli/commands/ask.py` | **Done** | Phase 7.1+7.2. `devmemory ask` with `--voice`, `--speak`, `--type`, `--model`, `--no-stream`, `--save`, `--no-plan`, `--voice-duration`. Query planner hint shown as dim prefix. |
+| `cli/commands/_voice.py` | **Done** | Shared voice helper extracted from `search.py`. `DEVMEMORY_WHISPER_MODEL` env var (default `tiny`). `transcribe_or_exit()` validates quality + length. |
+| `cli/commands/_speak.py` | **Done** | `StreamingSpeaker`: sentence-buffered TTS synced to streaming LLM output. `edge-tts` (en-GB-RyanNeural) + macOS `say -v Daniel` fallback. Background thread queue. |
+| `core/ml_intent_classifier.py` | **Done** | Phase 7.7. `MLIntentClassifier`: TF-IDF bigrams + SGDClassifier. `classify_intent_ml()` confidence-gated fallback to rule-based. Model at `~/.config/devmemory/intent_model.pkl`. |
+| `data/intent_labels.jsonl` | **Done** | Phase 7.7. 196 labeled examples, 5 intents (debug/recall/architecture/implementation/general). |
+| `cli/commands/train_cmd.py` | **Done** | Phase 7.7. `devmemory train-intent [--labels PATH] [--eval/--no-eval]`. |
 
 **All connectors implemented:**
 - `connectors/` — git, claude, terminal, markdown, voice, filesystem, copilot, browser, meeting — all done ✅
@@ -93,8 +102,8 @@
 - `api/auth.py` — optional API key auth done ✅
 
 **What's next:**
-1. **Phase 7.4** — Semantic diff awareness (`DiffConnector`, query code changes directly)
-2. **Phase 7.1** — Local LLM / RAG (`devmemory ask`)
+1. **Phase 7.8** — Codebase Map Generation (`devmemory map`, KMeans on stored vectors)
+2. **Phase 7.9** — Agent Mode (`devmemory plan`, git diff + memories + LLM)
 
 ---
 
@@ -3854,7 +3863,7 @@ Repo-scoped search was built as part of Phase 4B / hybrid_search. The `repo` fie
 
 > These are longer-term enhancements for when DevMemoryIndex has active users.
 
-**Recommended implementation order: ~~7.3~~ → ~~7.4~~ → ~~7.7~~ → 7.1 → 7.2 → 7.8 → 7.9 → 7.5 → 7.6**
+**Recommended implementation order: ~~7.3~~ → ~~7.4~~ → ~~7.7~~ → ~~7.1~~ → ~~7.2~~ → 7.8 → 7.9 → 7.5 → 7.6**
 
 **Dependency graph:**
 ```
@@ -3871,44 +3880,31 @@ New [ml] dep:           7.7, 7.8
 
 ---
 
-### 7.1 Local LLM / RAG (`devmemory ask`)
+### 7.1 Local LLM / RAG (`devmemory ask`) ✅
+
+**Status: COMPLETED**
 
 `devmemory ask "why did we move from Redis?"` → retrieves top memories → injects into LLM prompt → streams cited answer to terminal.
 
-**New files:**
-- `core/llm_backend.py` — abstract `LLMBackend` + `OllamaBackend` (POST `http://localhost:11434/api/generate`, stream via `httpx`) + `LlamaCppBackend` (POST `/completion` port 8080) + `get_backend(cfg_dict)` factory
-- `core/rag_engine.py` — `RAGEngine(store, backend)`: `ask(query, repo, max_context_tokens=3000, stream=True) -> (answer_str, cited_memories)`. Calls `ContextEngine.build(format="raw")`. `_format_for_prompt()` labels memories as `[MEMORY-1]...[MEMORY-N]`. `_build_prompt()` = system prompt + context + "Answer:"
-- `cli/commands/ask.py` — `ask(query, repo, model, no_stream, save)`, Rich `Live` for streaming
+**Implemented. Key details:**
+- `core/llm_backend.py` — `OllamaBackend` (POST `/api/generate`, httpx streaming) + `LlamaCppBackend` + `get_backend()` factory
+- `core/rag_engine.py` — `RAGEngine(store, backend)`: `ask(query, repo, type_filter, stream, plan)`. `_format_memories()` truncates to 2000 chars (preserves newlines, `---` separators). Returns `(stream_gen, planned)` for `stream=True`.
+- `cli/commands/ask.py` — `ask(query, repo, type, model, no_stream, save, voice, voice-duration, speak, no-plan)`, Rich `Live` for streaming
+- `core/query_planner.py` — `QueryPlanner(backend).plan(query)` → `{query, type, reason}`. Pre-retrieval LLM call determines optimal type + reformulated query. Falls back silently. `--no-plan` to skip. Shows routing decision as dim hint line.
+- `cli/commands/_voice.py` — shared voice input (`transcribe_or_exit`); `DEVMEMORY_WHISPER_MODEL` env var (default `"tiny"`)
+- `cli/commands/_speak.py` — `StreamingSpeaker`: sentence-buffered streaming TTS, en-GB-RyanNeural via edge-tts, macOS `say -v Daniel` fallback
 
-**Modified files:** `core/config.py` (add `get_llm_config() -> dict` for `[llm]` section), `pyproject.toml` (add `llm = ["httpx>=0.27"]`), `cli/main.py` (register inside `try/except ImportError`)
-
-**Reuses:** `ContextEngine.build()`, `get_store()`, `embed()`
-
-**Verify:**
-```bash
-uv pip install -e ".[llm]"
-ollama serve & ollama pull mistral
-devmemory ask "how does the daemon scheduler work?"
-# Streaming answer with [MEMORY-N] citations
-```
+**Modified files:** `core/config.py` (`get_llm_config()`/`set_llm_config()`), `pyproject.toml` (`[llm]`, `[speak]` extras), `cli/main.py`, `cli/commands/search.py` (voice helper extraction)
 
 ---
 
-### 7.2 Memory Feedback Loop
+### 7.2 Memory Feedback Loop ✅
 
-After `devmemory ask` completes, saves the Q&A pair as a new `agent_solution` memory (importance=0.75, tags=`["rag_answer", "auto_indexed"]`). Default on; `--no-save` to disable.
+**Status: COMPLETED**
 
-**No new files** — modifies only `core/rag_engine.py` and `cli/commands/ask.py` (both from 7.1):
-- `rag_engine.py`: add `save_answer(query, answer, cited_memories, repo) -> mem_id`. ID = `sha256(raw_text[:500])` for idempotency. Calls `redact()` before storing. Importance capped at 0.75 to prevent auto-answers dominating search.
-- `ask.py`: call `engine.save_answer()` after stream completes when `--save` (default True)
+After `devmemory ask` completes, `--save`/`-s` persists the Q&A pair as a new `agent_solution` memory (importance=0.75, tags=`["rag", "ask"]`). Off by default (explicit opt-in).
 
-**Reuses:** `redact()` (`core/privacy.py`), `store.exists()` + `store.add()`, `embed()`
-
-**Verify:**
-```bash
-devmemory ask "how does the dedup job work?"
-devmemory search "dedup job" --type agent_solution  # returns saved answer
-```
+**Implemented in:** `core/rag_engine.py` (`save_answer()`), `cli/commands/ask.py` (`--save` flag)
 
 ---
 
@@ -4131,8 +4127,8 @@ devmemory search "rate limiting" --type agent_solution  # plan saved
 | **Done** | 7.3 | Git Hook Integration (`devmemory hook install/uninstall/status`) | half day | |
 | **Done** | 7.4 | Semantic Diff Awareness (`DiffConnector`, `git_diff` memory type) | 1 day | |
 | **Done** | 7.7 | ML Intent Classifier (SGDClassifier + TF-IDF, confidence-gated fallback) | 1 day | |
-| **Future** | 7.1 | Local LLM / RAG (`devmemory ask`, Ollama/llama.cpp, `[llm]` extra) | 2 days | |
-| **Future** | 7.2 | Memory Feedback Loop (save Q&A answers back as agent_solution memories) | half day | |
+| **Done** | 7.1 | Local LLM / RAG (`devmemory ask`, Ollama/llama.cpp, query planner, `[llm]`/`[speak]` extras) | — | ✅ |
+| **Done** | 7.2 | Memory Feedback Loop (`--save` flag, Q&A stored as agent_solution) | — | ✅ |
 | **Future** | 7.8 | Codebase Map Generation (`devmemory map`, KMeans on stored vectors) | 1 day | |
 | **Future** | 7.9 | Agent Mode (`devmemory plan`, git diff + memories + LLM) | 1 day | |
 | **Future** | 7.5 | VSCode Extension (TypeScript, zero runtime deps, talks to REST API) | 2 days | |
