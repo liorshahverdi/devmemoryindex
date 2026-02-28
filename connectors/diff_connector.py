@@ -25,7 +25,7 @@ class DiffConnector(Connector):
 
     name = "diff"
 
-    def __init__(self, repo_paths: list[str] | None = None, commit_limit: int = 50):
+    def __init__(self, repo_paths: list[str] | None = None, commit_limit: int = 10):
         super().__init__()
         self.repo_paths = repo_paths or get_git_paths() or ["."]
         self.commit_limit = commit_limit
