@@ -26,7 +26,12 @@ class MemoryStore:
         self.collection = self._init_table()
 
     def _init_table(self):
-        table = self.db.create_table("memories", schema=_schema, exist_ok=True)
+        # Open existing table without schema re-validation to allow migrations.
+        # Create with full schema only for brand-new stores.
+        if "memories" in self.db.table_names():
+            table = self.db.open_table("memories")
+        else:
+            table = self.db.create_table("memories", schema=_schema)
         # Schema migration: add counter columns for stores created before I4
         existing = {f.name for f in table.schema}
         missing = {}

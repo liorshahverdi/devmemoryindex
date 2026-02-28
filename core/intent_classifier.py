@@ -27,8 +27,9 @@ INTENT_RULES: dict[str, dict] = {
         "keywords": [
             "what was", "remember", "last time", "before", "when did",
             "when was", "voice", "said", "told",
+            "what changed", "changed in",
         ],
-        "type_boost": ["voice_note", "agent_solution"],
+        "type_boost": ["voice_note", "agent_solution", "git_diff"],
         "importance_weight": 0.10,
         "recency_weight": 0.25,  # recall is highly recency-sensitive
         "sort_by_time": True,    # override score ranking — sort by timestamp descending
@@ -37,8 +38,9 @@ INTENT_RULES: dict[str, dict] = {
         "keywords": [
             "design", "pattern", "structure", "architecture", "how does",
             "why did", "decision", "approach", "schema", "model",
+            "removed", "deleted", "changed",
         ],
-        "type_boost": ["agent_solution", "git_commit"],
+        "type_boost": ["agent_solution", "git_commit", "git_diff"],
         "importance_weight": 0.20,
         "recency_weight": 0.05,  # older architectural decisions still relevant
     },

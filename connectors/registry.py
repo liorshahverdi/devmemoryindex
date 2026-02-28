@@ -1,4 +1,5 @@
 from connectors.git_connector import GitConnector
+from connectors.diff_connector import DiffConnector
 from connectors.claude_connector import ClaudeConnector
 from connectors.terminal_connector import TerminalConnector
 from connectors.markdown_connector import MarkdownConnector
@@ -14,6 +15,7 @@ from connectors.meeting_connector import MeetingConnector
 # Running it on a schedule records silence, noise, and other people's speech.
 ALL_CONNECTORS = [
     GitConnector,
+    DiffConnector,
     ClaudeConnector,
     TerminalConnector,
     MarkdownConnector,
