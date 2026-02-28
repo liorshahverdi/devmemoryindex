@@ -1,4 +1,3 @@
-import time
 import subprocess
 import typer
 from typing import Optional
@@ -8,41 +7,6 @@ from core.store_provider import get_store
 from core.embeddings import embed
 
 console = Console()
-
-
-def _record_and_transcribe(duration: int = 8) -> tuple[str, float]:
-    """Record audio and transcribe via Whisper. Returns (text, avg_no_speech_prob)."""
-    import numpy as np
-    import sounddevice as sd
-    import whisper
-
-    sample_rate = 16000
-
-    for remaining in range(3, 0, -1):
-        console.print(f"  [dim]{remaining}[/dim]", end="\r")
-        time.sleep(1)
-    console.print(f"[bold green]Recording...[/bold green] [dim]({duration}s)[/dim]")
-
-    audio = sd.rec(
-        duration * sample_rate,
-        samplerate=sample_rate,
-        channels=1,
-        dtype="int16",
-    )
-    sd.wait()
-
-    audio_f32 = audio.squeeze().astype("float32") / float(32768)
-
-    model = whisper.load_model("base")
-    result = model.transcribe(audio_f32)
-
-    text = result["text"].strip()
-    segments = result.get("segments", [])
-    avg_no_speech = (
-        sum(s.get("no_speech_prob", 0.0) for s in segments) / len(segments)
-        if segments else 0.0
-    )
-    return text, avg_no_speech
 
 
 def search(
@@ -55,20 +19,8 @@ def search(
 ):
     """Search your developer memory."""
     if voice:
-        try:
-            text, avg_no_speech = _record_and_transcribe(duration=8)
-        except ImportError:
-            console.print("[red]Voice search requires voice extras: uv pip install -e '.[voice]'[/red]")
-            raise typer.Exit(1)
-
-        if not text or avg_no_speech > 0.5:
-            console.print("[yellow]Could not understand audio. Try again.[/yellow]")
-            raise typer.Exit(1)
-
-        if len(text.split()) < 2:
-            console.print("[yellow]Query too short. Try again.[/yellow]")
-            raise typer.Exit(1)
-
+        from cli.commands._voice import transcribe_or_exit
+        text = transcribe_or_exit(duration=8)
         from core.intent_classifier import classify_intent as _ci
         _label, _ = _ci(text)
         intent_str = f" [dim](intent: {_label})[/dim]" if _label != "general" else ""

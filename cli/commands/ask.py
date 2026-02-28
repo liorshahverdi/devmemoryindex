@@ -6,13 +6,22 @@ console = Console()
 
 
 def ask(
-    query: str = typer.Argument(..., help="Question to ask your memory store."),
+    query: str | None = typer.Argument(None, help="Question to ask your memory store."),
     repo: str | None = typer.Option(None, "--repo", "-r", help="Filter context to a specific repo."),
     model: str | None = typer.Option(None, "--model", "-m", help="Override the configured LLM model."),
     no_stream: bool = typer.Option(False, "--no-stream", help="Collect full answer before printing."),
     save: bool = typer.Option(False, "--save", "-s", help="Save the answer as an agent_solution memory."),
+    voice: bool = typer.Option(False, "--voice", help="Speak your question instead of typing."),
 ):
     """Ask a question — retrieves memories, generates a cited answer via local LLM."""
+    if voice:
+        from cli.commands._voice import transcribe_or_exit
+        text = transcribe_or_exit(duration=8)
+        console.print(f'\n[bold cyan]Query (voice):[/bold cyan] {text}\n')
+        query = text
+    elif query is None:
+        console.print("[red]Provide a query or use --voice.[/red]")
+        raise typer.Exit(1)
     try:
         from core.llm_backend import get_backend
         from core.rag_engine import RAGEngine
@@ -34,7 +43,8 @@ def ask(
         console.print(f"[red]Failed to initialise LLM backend: {e}[/red]")
         raise typer.Exit(1)
 
-    console.print(f"\n[bold cyan]Query:[/bold cyan] {query}\n")
+    if not voice:
+        console.print(f"\n[bold cyan]Query:[/bold cyan] {query}\n")
 
     if no_stream:
         try:
