@@ -26,6 +26,15 @@ class RAGEngine:
         self.backend = backend
         self._ctx = ContextEngine(store)
 
+    def plan_query(self, query: str, repo: str | None = None) -> dict:
+        """Run the query planner and return {query, type, reason}.
+
+        Called by ask() when type_filter is None. Can also be called
+        directly from the CLI to show the routing decision before asking.
+        """
+        from core.query_planner import QueryPlanner
+        return QueryPlanner(self.backend).plan(query, repo=repo)
+
     def ask(
         self,
         query: str,
@@ -33,12 +42,24 @@ class RAGEngine:
         type_filter: str | None = None,
         max_context_tokens: int = 3000,
         stream: bool = True,
+        plan: bool = True,
     ):
         """Retrieve memories and query the LLM.
 
         stream=True  → generator that yields text chunks
-        stream=False → returns (full_answer: str, memories: list)
+        stream=False → returns (full_answer: str, memories: list, plan: dict)
+
+        When plan=True and type_filter is None, runs QueryPlanner first to
+        determine the best type + reformulated query automatically.
         """
+        planned: dict = {}
+        if plan and type_filter is None:
+            planned = self.plan_query(query, repo=repo)
+            if planned.get("query"):
+                query = planned["query"]
+            if planned.get("type"):
+                type_filter = planned["type"]
+
         ctx = self._ctx.build(
             query=query,
             repo=repo,
@@ -50,10 +71,10 @@ class RAGEngine:
         prompt = self._build_prompt(query, memories)
 
         if stream:
-            return self.backend.generate(prompt, stream=True)
+            return self.backend.generate(prompt, stream=True), planned
 
         chunks = list(self.backend.generate(prompt, stream=False))
-        return "".join(chunks), memories
+        return "".join(chunks), memories, planned
 
     def _build_prompt(self, query: str, memories: list) -> str:
         return (

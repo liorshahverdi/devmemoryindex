@@ -15,6 +15,7 @@ def ask(
     voice: bool = typer.Option(False, "--voice", help="Speak your question instead of typing."),
     voice_duration: int = typer.Option(5, "--voice-duration", help="Recording duration in seconds (default 5)."),
     speak: bool = typer.Option(False, "--speak", help="Read the answer aloud (British accent, synced to stream)."),
+    no_plan: bool = typer.Option(False, "--no-plan", help="Skip query planning, search all types (original behaviour)."),
 ):
     """Ask a question — retrieves memories, generates a cited answer via local LLM."""
     if voice:
@@ -49,13 +50,18 @@ def ask(
     if not voice:
         console.print(f"\n[bold cyan]Query:[/bold cyan] {query}\n")
 
+    use_plan = not no_plan and memory_type is None
+
     if no_stream:
         try:
-            answer, memories = engine.ask(query, repo=repo, type_filter=memory_type, stream=False)
+            answer, memories, planned = engine.ask(
+                query, repo=repo, type_filter=memory_type, stream=False, plan=use_plan,
+            )
         except Exception as e:
             console.print(f"[red]LLM error: {e}[/red]")
             _print_hint()
             raise typer.Exit(1)
+        _print_plan(planned)
         console.print(Markdown(answer))
         if speak:
             from cli.commands._speak import StreamingSpeaker
@@ -72,14 +78,18 @@ def ask(
             from cli.commands._speak import StreamingSpeaker
             speaker = StreamingSpeaker()
         try:
+            stream_gen, planned = engine.ask(
+                query, repo=repo, type_filter=memory_type, stream=True, plan=use_plan,
+            )
+            _print_plan(planned)
             with Live("", console=console, refresh_per_second=15) as live:
-                for chunk in engine.ask(query, repo=repo, type_filter=memory_type, stream=True):
+                for chunk in stream_gen:
                     chunks.append(chunk)
                     live.update("".join(chunks))
                     if speaker:
                         speaker.feed(chunk)
             if speaker:
-                speaker.finish()  # flush remainder, block until audio drains
+                speaker.finish()
             answer = "".join(chunks)
         except Exception as e:
             console.print(f"\n[red]LLM error: {e}[/red]")
@@ -90,6 +100,16 @@ def ask(
         mem_id = engine.save_answer(query, answer, repo=repo)
         if mem_id:
             console.print(f"\n[green]Answer saved as memory {mem_id[:8]}[/green]")
+
+
+def _print_plan(planned: dict) -> None:
+    if not planned or not planned.get("type"):
+        return
+    t = planned.get("type", "")
+    q = planned.get("query", "")
+    r = planned.get("reason", "")
+    console.print(f"[dim]→ searching [cyan]{t}[/cyan] for [italic]\"{q}\"[/italic]"
+                  + (f"  ({r})" if r else "") + "[/dim]\n")
 
 
 def _print_hint():
