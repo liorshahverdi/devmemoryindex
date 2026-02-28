@@ -23,6 +23,19 @@ class LLMBackend(ABC):
         """Yield text chunks (stream=True) or yield a single full string (stream=False)."""
         ...
 
+    def chat(self, messages: list[dict], stream: bool = True):
+        """Send a structured chat request (system + user roles).
+
+        Default implementation flattens messages into a single prompt and
+        delegates to generate(). Subclasses should override this to use
+        the backend's native chat endpoint so instruction-tuned models
+        receive properly formatted role tokens.
+
+        messages: [{"role": "system"|"user"|"assistant", "content": "..."}]
+        """
+        prompt = "\n\n".join(m["content"] for m in messages)
+        yield from self.generate(prompt, stream=stream)
+
 
 class OllamaBackend(LLMBackend):
     def __init__(self, model: str = "mistral", url: str = "http://localhost:11434"):
@@ -52,6 +65,32 @@ class OllamaBackend(LLMBackend):
             r = httpx.post(endpoint, json=payload, timeout=120)
             r.raise_for_status()
             yield r.json().get("response", "")
+
+    def chat(self, messages: list[dict], stream: bool = True):
+        """Use Ollama /api/chat so instruction-tuned models receive proper role tokens."""
+        import httpx
+        endpoint = f"{self.url}/api/chat"
+        payload = {"model": self.model, "messages": messages, "stream": stream}
+
+        if stream:
+            with httpx.stream("POST", endpoint, json=payload, timeout=120) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                        content = chunk.get("message", {}).get("content", "")
+                        if content:
+                            yield content
+                        if chunk.get("done"):
+                            break
+                    except json.JSONDecodeError:
+                        continue
+        else:
+            r = httpx.post(endpoint, json=payload, timeout=120)
+            r.raise_for_status()
+            yield r.json().get("message", {}).get("content", "")
 
 
 class LlamaCppBackend(LLMBackend):

@@ -68,21 +68,23 @@ class RAGEngine:
             format="raw",
         )
         memories = ctx["memories"]
-        prompt = self._build_prompt(query, memories)
+        messages = self._build_messages(query, memories)
 
         if stream:
-            return self.backend.generate(prompt, stream=True), planned
+            return self.backend.chat(messages, stream=True), planned
 
-        chunks = list(self.backend.generate(prompt, stream=False))
+        chunks = list(self.backend.chat(messages, stream=False))
         return "".join(chunks), memories, planned
 
-    def _build_prompt(self, query: str, memories: list) -> str:
-        return (
-            f"{_SYSTEM_PROMPT}\n\n"
+    def _build_messages(self, query: str, memories: list) -> list[dict]:
+        user_content = (
             f"MEMORIES:\n{self._format_memories(memories)}\n\n"
-            f"QUESTION: {query}\n\n"
-            f"ANSWER:"
+            f"QUESTION: {query}"
         )
+        return [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
 
     def _format_memories(self, memories: list) -> str:
         if not memories:
