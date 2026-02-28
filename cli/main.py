@@ -79,5 +79,12 @@ app.command()(get)
 from cli.commands.hook_cmd import app as hook_app
 app.add_typer(hook_app, name="hook")
 
+# Phase 7.7 — ML intent classifier training (requires [ml] extra)
+try:
+    from cli.commands.train_cmd import train_intent
+    app.command(name="train-intent")(train_intent)
+except ImportError:
+    pass
+
 if __name__ == "__main__":
     app()

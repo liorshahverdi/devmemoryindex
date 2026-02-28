@@ -1,0 +1,196 @@
+{"query": "error when running the server", "intent": "debug"}
+{"query": "fix the authentication bug", "intent": "debug"}
+{"query": "why is my test crashing", "intent": "debug"}
+{"query": "exception in memory store", "intent": "debug"}
+{"query": "traceback from pytest run", "intent": "debug"}
+{"query": "undefined variable in context engine", "intent": "debug"}
+{"query": "broken import after refactor", "intent": "debug"}
+{"query": "not working after the upgrade", "intent": "debug"}
+{"query": "why is it failing silently", "intent": "debug"}
+{"query": "null pointer exception in lancedb", "intent": "debug"}
+{"query": "fix the ranking bug", "intent": "debug"}
+{"query": "error: column not found in schema", "intent": "debug"}
+{"query": "crash when ingesting large diff", "intent": "debug"}
+{"query": "why is the embed function returning wrong shape", "intent": "debug"}
+{"query": "segfault in native lance code", "intent": "debug"}
+{"query": "how do I fix the duplicate key error", "intent": "debug"}
+{"query": "getting a timeout on the embedding call", "intent": "debug"}
+{"query": "broken after merging main", "intent": "debug"}
+{"query": "assert error in test_hybrid_search", "intent": "debug"}
+{"query": "exception: table memories already exists", "intent": "debug"}
+{"query": "why is hybrid search returning zero results", "intent": "debug"}
+{"query": "key error when reading memory record", "intent": "debug"}
+{"query": "daemon crashing at startup", "intent": "debug"}
+{"query": "score is NaN for some memories", "intent": "debug"}
+{"query": "import error for ml_intent_classifier", "intent": "debug"}
+{"query": "the diff connector is raising an exception", "intent": "debug"}
+{"query": "why is timestamp coming back as None", "intent": "debug"}
+{"query": "type error in add_batch call", "intent": "debug"}
+{"query": "lancedb panic on scan", "intent": "debug"}
+{"query": "cannot find module core.embeddings", "intent": "debug"}
+{"query": "fix the schema migration failure", "intent": "debug"}
+{"query": "search returns stale results after adding a memory", "intent": "debug"}
+{"query": "voice connector blowing up on enroll", "intent": "debug"}
+{"query": "git hook not firing on commit", "intent": "debug"}
+{"query": "why is the context cache not invalidating", "intent": "debug"}
+{"query": "getting permission denied on the memory db path", "intent": "debug"}
+{"query": "the repl freezes after the first query", "intent": "debug"}
+{"query": "why is importance drifting above 1.0", "intent": "debug"}
+{"query": "reinforce not updating the record", "intent": "debug"}
+{"query": "batch_existing_ids returning empty set unexpectedly", "intent": "debug"}
+{"query": "what was the solution I found last week", "intent": "recall"}
+{"query": "when did I add the batch write", "intent": "recall"}
+{"query": "remember the command I used to reset lance", "intent": "recall"}
+{"query": "what changed in the ranking code", "intent": "recall"}
+{"query": "last time I configured the daemon", "intent": "recall"}
+{"query": "when was the context cache added", "intent": "recall"}
+{"query": "what did I say about the lancedb migration", "intent": "recall"}
+{"query": "before we switched to embed_batch", "intent": "recall"}
+{"query": "what was the approach for deduplication", "intent": "recall"}
+{"query": "when did I fix the null panic", "intent": "recall"}
+{"query": "what changed in memory_store last sprint", "intent": "recall"}
+{"query": "remind me what the CTR dampening formula was", "intent": "recall"}
+{"query": "I told you to remember the pyarrow schema trick", "intent": "recall"}
+{"query": "what was the original commit limit we used", "intent": "recall"}
+{"query": "voice note from yesterday about the ranking tweak", "intent": "recall"}
+{"query": "when did the diff connector land", "intent": "recall"}
+{"query": "what was the self-healing fix for lance fragments", "intent": "recall"}
+{"query": "changed in the schema after I4", "intent": "recall"}
+{"query": "before the importance cap was added", "intent": "recall"}
+{"query": "what was the threshold for speaker identity", "intent": "recall"}
+{"query": "when did I enroll my voice profile", "intent": "recall"}
+{"query": "what said about the token budget approach", "intent": "recall"}
+{"query": "remember the reason we dropped unified=3", "intent": "recall"}
+{"query": "last time I ran ingest how many memories were added", "intent": "recall"}
+{"query": "what was the original importance weight for git commits", "intent": "recall"}
+{"query": "what changed between phase 7.3 and 7.4", "intent": "recall"}
+{"query": "when did I add the failure_note memory type", "intent": "recall"}
+{"query": "what was the fix for the copilot connector parsing", "intent": "recall"}
+{"query": "recall the keyword list for recall intent", "intent": "recall"}
+{"query": "before the batch exists check was added", "intent": "recall"}
+{"query": "what was the git log format string I used", "intent": "recall"}
+{"query": "when did I set up the launchd plist", "intent": "recall"}
+{"query": "what was the markdown chunk strategy", "intent": "recall"}
+{"query": "remember the privacy redaction pattern for api keys", "intent": "recall"}
+{"query": "what changed in context_engine for intent routing", "intent": "recall"}
+{"query": "last session I had a note about the scoring weights", "intent": "recall"}
+{"query": "when was importance decay introduced", "intent": "recall"}
+{"query": "what was the decision on reinforce cap", "intent": "recall"}
+{"query": "how does the memory store work", "intent": "architecture"}
+{"query": "design of the hybrid search pipeline", "intent": "architecture"}
+{"query": "why did we choose lancedb over chroma", "intent": "architecture"}
+{"query": "schema for memory records", "intent": "architecture"}
+{"query": "what pattern does the context engine use", "intent": "architecture"}
+{"query": "architecture of the MCP server", "intent": "architecture"}
+{"query": "structure of the connector registry", "intent": "architecture"}
+{"query": "how does intent routing affect scoring", "intent": "architecture"}
+{"query": "design decision behind the self-healing migration", "intent": "architecture"}
+{"query": "why did we use sha256 for memory IDs", "intent": "architecture"}
+{"query": "approach to token budget packing", "intent": "architecture"}
+{"query": "model for ranking memories by importance and recency", "intent": "architecture"}
+{"query": "how does the context cache invalidation work", "intent": "architecture"}
+{"query": "removed the per-file embed call in favour of batch", "intent": "architecture"}
+{"query": "deleted the exist_ok parameter from create_table", "intent": "architecture"}
+{"query": "why did we cap reinforce at 0.8 not 1.0", "intent": "architecture"}
+{"query": "how does the CTR dampening logic work", "intent": "architecture"}
+{"query": "schema migration strategy for counter columns", "intent": "architecture"}
+{"query": "why do we use fragment-based writes in lance", "intent": "architecture"}
+{"query": "design of the daemon scheduler loop", "intent": "architecture"}
+{"query": "how does the dedup job decide which copy to keep", "intent": "architecture"}
+{"query": "architecture of the voice connector speaker identity check", "intent": "architecture"}
+{"query": "pattern for confidence-gated ML classification", "intent": "architecture"}
+{"query": "how does the diff connector split per-file diffs", "intent": "architecture"}
+{"query": "why is git_diff importance set to 0.6", "intent": "architecture"}
+{"query": "structure of the PyArrow schema for memories", "intent": "architecture"}
+{"query": "how does type boosting interact with the score formula", "intent": "architecture"}
+{"query": "decision to use embed_batch instead of embed per file", "intent": "architecture"}
+{"query": "approach to keyword search in hybrid_search", "intent": "architecture"}
+{"query": "why do we over-retrieve 50 then rank down to k", "intent": "architecture"}
+{"query": "how does the failure_note penalty interact with regular ranking", "intent": "architecture"}
+{"query": "design of the rollup format for recall queries", "intent": "architecture"}
+{"query": "removed Redis in favour of in-process cache", "intent": "architecture"}
+{"query": "deleted the old vector-only search path", "intent": "architecture"}
+{"query": "changed the recency weight for architecture intent", "intent": "architecture"}
+{"query": "why does recall intent override score ranking with timestamp sort", "intent": "architecture"}
+{"query": "how does the batch_existing_ids query avoid N+1 issues", "intent": "architecture"}
+{"query": "design of the MCP tool parameter types", "intent": "architecture"}
+{"query": "approach to redaction before storing raw_text", "intent": "architecture"}
+{"query": "how to add a new connector", "intent": "implementation"}
+{"query": "how to configure the daemon schedule", "intent": "implementation"}
+{"query": "how to deploy the REST API", "intent": "implementation"}
+{"query": "setup lancedb for the first time", "intent": "implementation"}
+{"query": "install voice dependencies", "intent": "implementation"}
+{"query": "how to build and install the package", "intent": "implementation"}
+{"query": "configure markdown scan directories", "intent": "implementation"}
+{"query": "how to register a new MCP tool", "intent": "implementation"}
+{"query": "implement a custom importance decay", "intent": "implementation"}
+{"query": "how to add a new intent class to the classifier", "intent": "implementation"}
+{"query": "integrate the diff connector into the scheduler", "intent": "implementation"}
+{"query": "create a new memory type for copilot responses", "intent": "implementation"}
+{"query": "how to build the docker image for the API server", "intent": "implementation"}
+{"query": "setup the launchd plist for daemon autostart", "intent": "implementation"}
+{"query": "how to enroll a voice speaker profile", "intent": "implementation"}
+{"query": "configure the context cache TTL", "intent": "implementation"}
+{"query": "how to add a where filter to hybrid search", "intent": "implementation"}
+{"query": "implement the train-intent command", "intent": "implementation"}
+{"query": "how to write a batch upsert for lancedb", "intent": "implementation"}
+{"query": "setup the github actions webhook integration", "intent": "implementation"}
+{"query": "how to add a new CLI command to the typer app", "intent": "implementation"}
+{"query": "configure git repo paths for the diff connector", "intent": "implementation"}
+{"query": "how to install the ml optional dependencies", "intent": "implementation"}
+{"query": "implement codebase map clustering", "intent": "implementation"}
+{"query": "how to add type hints to the Memory dataclass", "intent": "implementation"}
+{"query": "build a new scoring formula for domain-specific queries", "intent": "implementation"}
+{"query": "how to deploy on a remote linux server", "intent": "implementation"}
+{"query": "setup devmemory with the Claude Code MCP config", "intent": "implementation"}
+{"query": "how to create a jsonl label file for intent training", "intent": "implementation"}
+{"query": "implement a streaming response for the ask endpoint", "intent": "implementation"}
+{"query": "how to configure the api key for the REST server", "intent": "implementation"}
+{"query": "build a prune job that targets low-CTR memories", "intent": "implementation"}
+{"query": "how to add a git hook to auto-ingest on push", "intent": "implementation"}
+{"query": "setup the watchdog filesystem watcher for markdown", "intent": "implementation"}
+{"query": "implement batch embedding for a new connector", "intent": "implementation"}
+{"query": "how to export memories to a JSON file", "intent": "implementation"}
+{"query": "install and configure ollama for the ask command", "intent": "implementation"}
+{"query": "how to run the context engine tests", "intent": "implementation"}
+{"query": "devmemory stats", "intent": "general"}
+{"query": "show me recent memories", "intent": "general"}
+{"query": "memory count in the store", "intent": "general"}
+{"query": "list all memories about pandas", "intent": "general"}
+{"query": "search for lancedb", "intent": "general"}
+{"query": "find memories tagged with git", "intent": "general"}
+{"query": "what is in the memory store", "intent": "general"}
+{"query": "show me git_diff memories", "intent": "general"}
+{"query": "hybrid search ranking", "intent": "general"}
+{"query": "context engine output", "intent": "general"}
+{"query": "memory about the scoring formula", "intent": "general"}
+{"query": "search for embed_batch", "intent": "general"}
+{"query": "find terminal commands I ran", "intent": "general"}
+{"query": "show agent_solution memories", "intent": "general"}
+{"query": "context for devmemoryindex repo", "intent": "general"}
+{"query": "memory about lancedb schema", "intent": "general"}
+{"query": "search for copilot connector", "intent": "general"}
+{"query": "what memories exist about ranking", "intent": "general"}
+{"query": "find voice notes", "intent": "general"}
+{"query": "show me all markdown memories", "intent": "general"}
+{"query": "memories about importance decay", "intent": "general"}
+{"query": "find memories from last month", "intent": "general"}
+{"query": "search importance weight", "intent": "general"}
+{"query": "show git_commit memories", "intent": "general"}
+{"query": "memories for the core module", "intent": "general"}
+{"query": "search for add_batch", "intent": "general"}
+{"query": "find memories tagged failed", "intent": "general"}
+{"query": "context about embeddings", "intent": "general"}
+{"query": "show me failure notes", "intent": "general"}
+{"query": "memories about the daemon", "intent": "general"}
+{"query": "search the store for pyarrow", "intent": "general"}
+{"query": "find memories related to tokenization", "intent": "general"}
+{"query": "show all memories in devmemoryindex repo", "intent": "general"}
+{"query": "search for terminal_command type", "intent": "general"}
+{"query": "memories about the API server", "intent": "general"}
+{"query": "find memories about the repl", "intent": "general"}
+{"query": "context for voice connector", "intent": "general"}
+{"query": "memories with high importance", "intent": "general"}
+{"query": "show recent git commits indexed", "intent": "general"}
+{"query": "search for codebase map", "intent": "general"}
+{"query": "memories about token budget", "intent": "general"}
