@@ -181,6 +181,25 @@ def remove_meeting_dir(path: str) -> bool:
     return True
 
 
+# ── API key helpers ───────────────────────────────────────────────
+
+
+def get_api_key() -> str | None:
+    return load().get("api", {}).get("key") or None
+
+
+def set_api_key(key: str) -> None:
+    data = load()
+    data.setdefault("api", {})["key"] = key
+    save(data)
+
+
+def delete_api_key() -> None:
+    data = load()
+    data.get("api", {}).pop("key", None)
+    save(data)
+
+
 # ── Schedule helpers ──────────────────────────────────────────────────
 
 _DEFAULT_INTERVALS: dict[str, int] = {

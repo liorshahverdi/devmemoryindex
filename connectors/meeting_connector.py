@@ -49,6 +49,13 @@ class MeetingConnector(Connector):
         except ImportError:
             return 0  # silently skip if Whisper not installed
 
+        import shutil
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError(
+                "ffmpeg not found. Whisper requires ffmpeg to decode audio files.\n"
+                "Install it with: brew install ffmpeg"
+            )
+
         if not self.dirs:
             return 0
 
@@ -64,8 +71,9 @@ class MeetingConnector(Connector):
                     continue
                 try:
                     count += self._index_file(audio_file)
-                except Exception:
-                    pass
+                except Exception as e:
+                    import warnings
+                    warnings.warn(f"Failed to index {audio_file.name}: {e}")
         return count
 
     def _index_file(self, path: Path) -> int:

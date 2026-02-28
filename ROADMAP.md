@@ -74,12 +74,14 @@
 | Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/`, `scripts/` directories |
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
 
-**What's empty / partially implemented:**
-- `connectors/` — git + claude + terminal + markdown + voice done. Filesystem, copilot, browser are TODO.
-- `daemon/watcher.py` — filesystem watcher not yet implemented.
+**All connectors implemented:**
+- `connectors/` — git, claude, terminal, markdown, voice, filesystem, copilot, browser, meeting — all done ✅
+- `daemon/watcher.py` — filesystem watcher done ✅
 
 **What's next:**
-1. **Phase 6** — Memory compression: summarize old low-importance memories to save tokens
+1. **Phase 5.B/C/D** — Context caching, dedup job, related memories
+2. **Phase 6.7** — Multi-project namespace
+3. **Phase 7** — RAG, git hooks, VSCode extension, web UI
 
 ---
 
@@ -936,7 +938,7 @@ class GitConnector(Connector):
 
 ---
 
-### 2.4 Terminal History Connector
+### 2.4 Terminal History Connector ✅
 
 **File:** `connectors/terminal_connector.py`
 
@@ -1039,7 +1041,7 @@ class TerminalConnector(Connector):
 
 ---
 
-### 2.5 Filesystem Connector
+### 2.5 Filesystem Connector ✅
 
 **File:** `connectors/filesystem_connector.py`
 
@@ -1141,7 +1143,7 @@ class FilesystemConnector(Connector):
 
 ---
 
-### 2.6 Markdown / Notes Connector
+### 2.6 Markdown / Notes Connector ✅
 
 **File:** `connectors/markdown_connector.py`
 
@@ -1234,7 +1236,7 @@ class MarkdownConnector(Connector):
 
 ---
 
-### 2.7 Claude Code Connector
+### 2.7 Claude Code Connector ✅
 
 **File:** `connectors/claude_connector.py`
 
@@ -1361,7 +1363,7 @@ class ClaudeConnector(Connector):
 
 ---
 
-### 2.8 Copilot Chat Connector (Best-Effort)
+### 2.8 Copilot Chat Connector ✅
 
 **File:** `connectors/copilot_connector.py`
 
@@ -1598,12 +1600,12 @@ Use `small` for developer dictation — technical vocabulary benefits from the l
 
 ---
 
-### 2.9b Meeting Connector + Speaker Identification
+### 2.9b Meeting Connector + Speaker Identification ✅
 
-**Status: PARTIAL** — `core/speaker_profile.py` (enroll/load/identify) and `cli/commands/enroll.py` are done. Speaker ID integrated into `voice_connector.py`. `connectors/meeting_connector.py` (batch file processing) not yet implemented.
+**Status: Complete** — `connectors/meeting_connector.py`, `core/speaker_profile.py`, and `cli/commands/enroll.py` all done.
 
 **Files:**
-- `connectors/meeting_connector.py` — ingest a meeting audio file, diarize, identify speakers, store per-speaker memories *(TODO)*
+- `connectors/meeting_connector.py` — transcribes audio via Whisper, optional pyannote diarization, stores `meeting_transcript` memories ✅
 - `core/speaker_profile.py` — enroll your voice once; load profile; cosine-similarity identification ✅
 - `cli/commands/enroll.py` — `devmemory voice enroll` ✅
 
@@ -2186,7 +2188,7 @@ EXTENSIONS = {".mp4", ".m4a", ".wav", ".mp3"}
 
 ---
 
-### 2.10 Browser Bookmarks Connector
+### 2.10 Browser Bookmarks Connector ✅
 
 **File:** `connectors/browser_connector.py`
 
@@ -3476,6 +3478,34 @@ devmemory search --voice   # speak: "when did the last deploy fail?"
 
 ---
 
+### 4B.2 API Key Authentication ✅
+
+**Files:**
+- `api/auth.py` — `verify_api_key` FastAPI dependency; open if no key configured, 401 otherwise
+- `cli/commands/api_key_cmd.py` — `devmemory api-key generate/show/revoke`
+- `core/config.py` — `get_api_key()`, `set_api_key()`, `delete_api_key()` under `[api]` section
+- `api/server.py` — `Depends(verify_api_key)` on all routers; `--no-auth` flag bypasses via `DEVMEMORY_NO_AUTH` env var
+- `cli/commands/serve.py` — `--no-auth` flag
+
+**Behaviour:**
+- No key in config → all requests accepted (safe for localhost default)
+- Key in config → `Authorization: Bearer <key>` required on every request
+- Wrong or missing key → `401 Unauthorized`
+- `devmemory serve --no-auth` → bypasses enforcement even if a key is configured
+
+**Usage:**
+```bash
+devmemory api-key generate      # prints: API key saved. Use: Authorization: Bearer a3f9c1...
+devmemory api-key show          # prints current key
+devmemory api-key revoke        # removes key (re-opens server)
+devmemory serve                 # enforces auth if key is set
+devmemory serve --no-auth       # skips enforcement (localhost dev / debugging)
+
+curl -H "Authorization: Bearer a3f9c1..." http://machine:7711/memory/search?q=redis
+```
+
+---
+
 ## Phase 5 — Daemon (Automation)
 
 > **Goal:** Memories appear automatically without running manual commands.
@@ -3517,7 +3547,7 @@ def run_daemon(interval: int = 300):
         time.sleep(interval)
 ```
 
-### 5.2 File Watcher (Optional Enhancement)
+### 5.2 File Watcher ✅
 
 **File:** `daemon/watcher.py`
 
@@ -3704,7 +3734,7 @@ def run_daemon(interval: int = 300):
 
 > **Pulled forward from Phase 6.** These features directly improve query quality for both voice search and agent queries. Build after Phase 4A MCP is working. No LLMs required — all rule-based or lightweight.
 
-### 5.A — Intent Classifier (Rule-Based, No LLM)
+### 5.A — Intent Classifier ✅
 
 **New file:** `core/intent_classifier.py`
 

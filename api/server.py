@@ -11,6 +11,11 @@ Endpoints:
   GET  /memory/context  — build AI-ready context block
   POST /memory/ingest   — webhook push from CI/CD / external tools
 
+Auth:
+  If [api] key is set in config.toml → Authorization: Bearer <key> required.
+  If no key configured → open access (localhost-safe default).
+  `devmemory serve --no-auth` bypasses enforcement even when a key is set.
+
 Run:
   uvicorn api.server:app --host 127.0.0.1 --port 7711 --reload
 
@@ -18,9 +23,12 @@ Or via CLI:
   devmemory serve
 """
 
-from fastapi import FastAPI
+import os
+
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.auth import verify_api_key
 from api.routes.search import router as search_router
 from api.routes.memory import router as memory_router
 from api.routes.context import router as context_router
@@ -39,13 +47,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_auth_dep = [Depends(verify_api_key)]
+
 # Order matters: literal routes must be registered before /{memory_id} wildcard
-app.include_router(search_router, prefix="/memory", tags=["search"])
-app.include_router(context_router, prefix="/memory", tags=["context"])
-app.include_router(webhook_router, prefix="/memory", tags=["webhook"])
-app.include_router(memory_router, prefix="/memory", tags=["memory"])  # /{memory_id} last
+app.include_router(search_router, prefix="/memory", tags=["search"], dependencies=_auth_dep)
+app.include_router(context_router, prefix="/memory", tags=["context"], dependencies=_auth_dep)
+app.include_router(webhook_router, prefix="/memory", tags=["webhook"], dependencies=_auth_dep)
+app.include_router(memory_router, prefix="/memory", tags=["memory"], dependencies=_auth_dep)  # /{memory_id} last
 
 
-def start_server(host: str = "127.0.0.1", port: int = 7711, reload: bool = False):
+def start_server(
+    host: str = "127.0.0.1",
+    port: int = 7711,
+    reload: bool = False,
+    auth_enabled: bool = True,
+):
     import uvicorn
+
+    if not auth_enabled:
+        os.environ["DEVMEMORY_NO_AUTH"] = "1"
+    elif "DEVMEMORY_NO_AUTH" in os.environ:
+        del os.environ["DEVMEMORY_NO_AUTH"]
+
     uvicorn.run("api.server:app", host=host, port=port, reload=reload)

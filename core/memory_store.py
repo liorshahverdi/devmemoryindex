@@ -97,7 +97,9 @@ class MemoryStore:
         conditions: list[str] = []
         if type_filter:
             safe_type = type_filter.replace("'", "''")
-            conditions.append(f"type = '{safe_type}'")
+            # Use prefix match so "meeting" finds "meeting_transcript",
+            # "copilot" finds "copilot_chat", etc.
+            conditions.append(f"type LIKE '{safe_type}%'")
         if repo_filter:
             safe_repo = repo_filter.replace("'", "''")
             conditions.append(f"repo = '{safe_repo}'")

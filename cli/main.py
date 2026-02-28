@@ -63,6 +63,10 @@ app.command()(repl)
 from cli.commands.serve import serve
 app.command()(serve)
 
+# Phase 4B.2 — API key management
+from cli.commands.api_key_cmd import app as api_key_app
+app.add_typer(api_key_app, name="api-key")
+
 # Daemon log viewer
 from cli.commands.log_cmd import log
 app.command()(log)
