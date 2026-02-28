@@ -133,7 +133,7 @@ devmemory api-key generate      # saves key, prints it once
 devmemory serve                 # enforces auth if key configured
 devmemory serve --no-auth       # disables enforcement (debug / trusted LAN)
 
-curl -H "Authorization: Bearer <key>" http://remote:7711/memory/search?q=redis
+curl -H "Authorization: Bearer <key>" "http://remote:7711/memory/search?q=redis"
 ```
 ```
 
@@ -150,16 +150,16 @@ devmemory api-key generate
 devmemory serve &
 
 # 3. Unauthenticated request → 401
-curl -s http://localhost:7711/memory/search?q=test
+curl -s "http://localhost:7711/memory/search?q=test"
 # Expected: {"detail": "Invalid or missing API key"}
 
 # 4. Authenticated request → results
-curl -s -H "Authorization: Bearer <key>" http://localhost:7711/memory/search?q=test
+curl -s -H "Authorization: Bearer <key>" "http://localhost:7711/memory/search?q=test"
 # Expected: {"query": "test", "count": ..., "results": [...]}
 
 # 5. --no-auth bypasses enforcement
 devmemory serve --no-auth &
-curl -s http://localhost:7711/memory/search?q=test
+curl -s "http://localhost:7711/memory/search?q=test"
 # Expected: results (no header needed)
 
 # 6. Revoke key → server re-opens
@@ -224,7 +224,7 @@ curl -s http://192.168.1.42:7711/docs | head -5
 ### Step 3 — Unauthenticated request should be rejected
 
 ```bash
-curl -s http://192.168.1.42:7711/memory/search?q=test
+curl -s "http://192.168.1.42:7711/memory/search?q=test"
 # Expected: {"detail":"Invalid or missing API key"}
 ```
 
@@ -301,7 +301,7 @@ ssh -L 7711:localhost:7711 user@server-host
 # Then in another terminal on the client:
 curl -s \
   -H "Authorization: Bearer $DEVMEMORY_KEY" \
-  http://localhost:7711/memory/search?q=test
+  "http://localhost:7711/memory/search?q=test"
 ```
 
 **Option C — GitHub Actions (CI/CD):**

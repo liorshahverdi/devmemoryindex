@@ -182,3 +182,42 @@ def test_hybrid_returns_at_most_k_results(store):
 
     results = store.hybrid_search("Webpack", embed("Webpack"), k=3)
     assert len(results) <= 3
+
+
+def test_keyword_only_hit_ranks_above_unrelated_semantic_hit(store):
+    """
+    Regression test: a keyword-exact match must outrank a semantically-close
+    but topically unrelated result.
+
+    Before the fix, keyword-only results defaulted to _distance=1.0 (semantic=0.0)
+    and would sink to the bottom regardless of relevance.
+    """
+    # Memory that will score well semantically for "mule proxies" — but doesn't
+    # contain the words (just semantically adjacent enough to land in top-50).
+    sem_mem = _make_memory(
+        "sem-only",
+        "API gateway configuration and reverse proxy routing rules",
+        importance=0.8,
+    )
+    sem_vec = embed(sem_mem.summary)
+
+    # Memory that literally contains the exact query terms in raw_text,
+    # but has a distant embedding vector.
+    kw_mem = _make_memory(
+        "kw-only",
+        "Kyle Woolford 0:03",  # short, uninformative summary (like a transcript chunk)
+        raw_text="We discussed how mule proxies handle the message routing between services.",
+        importance=0.75,
+    )
+    kw_vec = _distant_vector()
+
+    store.add(sem_mem, sem_vec)
+    store.add(kw_mem, kw_vec)
+
+    results = store.hybrid_search("mule proxies", embed("mule proxies"), k=5)
+    ids = [r["id"] for r in results]
+
+    assert "kw-only" in ids, "Keyword-exact match must appear in results"
+    assert ids.index("kw-only") < ids.index("sem-only"), (
+        "Keyword-exact match should rank above unrelated semantic hit"
+    )

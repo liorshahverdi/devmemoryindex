@@ -27,7 +27,7 @@
 | `core/tests/test_memory_store.py` | **Done** | 3 tests — all passing. |
 | `core/tests/test_ranking.py` | **Done** | 11 tests — recency decay, score formula, ranking order. All passing. |
 | `core/tests/test_hybrid_search.py` | **Done** | 5 tests — keyword surfacing, deduplication, hybrid-vs-semantic, importance ranking, k limit. All passing. |
-| `cli/main.py` — Typer entrypoint | **Done** | 14 commands registered: `search`, `add`, `stats`, `prune`, `dictate`, `voice`, `context`, `suggest`, `daemon`, `export`, `import`, `repl`, `ingest`, `config`. |
+| `cli/main.py` — Typer entrypoint | **Done** | 17 commands/sub-apps registered: `search`, `add`, `stats`, `prune`, `dictate`, `voice`, `context`, `suggest`, `daemon`, `export`, `import`, `repl`, `ingest`, `config`, `serve`, `log`, `get`, `api-key`. |
 | `cli/commands/search.py` | **Done** | `hybrid_search()`, `--type`/`--repo` filters, `--voice` (3s countdown + 8s record + quality gate), `--speak` flag. |
 | `cli/commands/context.py` | **Done** | `devmemory context` — wraps `ContextEngine`, supports `--format raw/markdown/claude`, `--json`, `--copy`, `--repo`, `--tokens`. |
 | `cli/commands/suggest.py` | **Done** | `devmemory suggest` — `git diff HEAD` → `ContextEngine` → print context. Falls back to `git log -5`. No query required. |
@@ -73,15 +73,26 @@
 | `pyproject.toml` | **Done** | `[project.scripts]` registered, hatchling build, dev deps + `[voice]` optional extras configured. |
 | Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/`, `scripts/` directories |
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
+| `connectors/filesystem_connector.py` | **Done** | Indexes code files from configured scan dirs. Language-aware importance: Python/TS/Go=0.7, others=0.5. Skips binaries, hidden dirs, `.gitignore` patterns. `devmemory config add-fs <dir>` to configure. |
+| `connectors/copilot_connector.py` | **Done** | Indexes GitHub Copilot chat logs from VSCode `workspaceStorage`. Extracts assistant responses ≥ 100 chars. Importance 0.7. |
+| `connectors/browser_connector.py` | **Done** | Indexes browser bookmarks from Chrome/Firefox/Safari. Extracts title + URL, stores as `browser_bookmark`. Importance 0.6. |
+| `connectors/meeting_connector.py` | **Done** | Indexes meeting transcripts from configured dirs. Chunks by speaker turn. Speaker identification via cosine profile. importance=0.75 for self turns. |
+| `core/config.py` — API key helpers | **Done** | `get_api_key()`, `set_api_key()`, `delete_api_key()` — `[api]` section in config.toml. |
+| `api/auth.py` | **Done** | `verify_api_key` FastAPI dependency. Open if no key configured; 401 if key set and header missing/wrong; `DEVMEMORY_NO_AUTH` env var bypasses enforcement. |
+| `cli/commands/api_key_cmd.py` | **Done** | `devmemory api-key generate/show/revoke` — 64-char hex key management. |
+| `api/tests/test_auth.py` | **Done** | 10 tests — open access, key enforcement, wrong key, `--no-auth` bypass. All passing. |
+| `cli/commands/serve.py` — `--no-auth` flag | **Done** | Disables key enforcement even if a key is configured. Passes `auth_enabled=False` → sets `DEVMEMORY_NO_AUTH=1`. |
+| `cli/commands/get_cmd.py` | **Done** | `devmemory get <id-or-prefix>` — exact + prefix-scan lookup, metadata panel + raw_text panel. |
+| `cli/commands/search.py` — ID column | **Done** | Search results table now includes an 8-char ID prefix column for quick copy-paste into `devmemory get`. |
 
 **All connectors implemented:**
 - `connectors/` — git, claude, terminal, markdown, voice, filesystem, copilot, browser, meeting — all done ✅
 - `daemon/watcher.py` — filesystem watcher done ✅
+- `api/auth.py` — optional API key auth done ✅
 
 **What's next:**
-1. **Phase 5.B/C/D** — Context caching, dedup job, related memories
-2. **Phase 6.7** — Multi-project namespace
-3. **Phase 7** — RAG, git hooks, VSCode extension, web UI
+1. **Phase 6.7** — Multi-project namespace
+2. **Phase 7** — RAG (`devmemory ask`), git hook integration, VSCode extension, web UI
 
 ---
 
@@ -3126,13 +3137,11 @@ claude mcp add devmemory -s local -- uv run python -m mcp_server.server
 
 ---
 
-## Phase 4B — REST API (External Agent Interface)
+## Phase 4B — REST API (External Agent Interface) ✅
 
-> **Status: NOT STARTED** — `api/` directory is empty. Build after Phase 4A.
+> **Status: COMPLETED** — `api/` fully implemented with auth.
 >
 > **Goal:** External processes (CI/CD pipelines, shell scripts, cross-machine agents) can push and query memories over HTTP. Not the primary agent interface — that's Phase 4A MCP.
->
-> **New addition vs current spec:** `GET /memory/context/stream` — Server-Sent Events endpoint for agents that display context progressively.
 
 ### 4B.1 FastAPI Server
 
@@ -3501,7 +3510,7 @@ devmemory api-key revoke        # removes key (re-opens server)
 devmemory serve                 # enforces auth if key is set
 devmemory serve --no-auth       # skips enforcement (localhost dev / debugging)
 
-curl -H "Authorization: Bearer a3f9c1..." http://machine:7711/memory/search?q=redis
+curl -H "Authorization: Bearer a3f9c1..." "http://machine:7711/memory/search?q=redis"
 ```
 
 ---
@@ -3790,29 +3799,27 @@ def classify_intent(query: str) -> tuple[str, dict]:
 
 ---
 
-### 5.B — Context Caching
+### 5.B — Context Caching ✅
 
-**New file:** `core/context_cache.py`
+**Status: COMPLETED** — `core/context_cache.py` implemented.
 
-In-memory cache inside `ContextEngine`. Key: `sha256(query + repo + format)`. Max 50 entries, 5-minute TTL, invalidated on `store.add()`. Eliminates re-embedding + re-searching for repeated MCP tool calls within a Claude Code session.
-
----
-
-### 5.C — Memory Deduplication Job
-
-**New file:** `daemon/jobs/dedup.py`
-
-Weekly job: find memories where `summary[:100].lower()` matches another entry. Keep higher-importance version, delete lower. Wire into `daemon/scheduler.py`. Important after Claude connector and filesystem connector add high volumes.
+Module-level LRU cache (50 entries, 5-min TTL) for `ContextEngine.build()`. Key: `sha256(query|repo|format|intent)`. Auto-invalidated via `store.add()`. Context response includes `cached: true/false`.
 
 ---
 
-### 5.D — Related Memories
+### 5.C — Memory Deduplication Job ✅
 
-**Edit:** `core/memory_store.py` → `hybrid_search()` return value
+**Status: COMPLETED** — `daemon/jobs/dedup.py` implemented.
 
-After ranking, add `"related": [ids of nearest neighbors from semantic_results not already in top-k][:3]`. No additional search calls — uses the already-retrieved `semantic_results` pool from step 1 of `hybrid_search`.
+Groups memories by `summary[:100].lower()`, keeps highest-importance duplicate, deletes the rest. Runs weekly (Mondays) in daemon scheduler.
 
-MCP `memory_search` tool exposes this field — agents can follow memory links without extra tool calls.
+---
+
+### 5.D — Related Memories ✅
+
+**Status: COMPLETED** — `core/memory_store.py` updated.
+
+`hybrid_search()` return value includes `"related": [ids of nearest neighbors from semantic_results not already in top-k][:3]`. No additional search calls. MCP `search_memories` and REST `/memory/search` both expose this field. `devmemory get <id>` resolves related IDs.
 
 ---
 

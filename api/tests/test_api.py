@@ -170,3 +170,52 @@ class TestWebhookEndpoint:
     def test_ingest_persists_to_store(self, store):
         client.post("/memory/ingest", json={"text": "webhook persist test"})
         assert store.count() == 1
+
+
+class TestWebhookChunking:
+
+    def _long_transcript(self, n_paras: int = 5, para_len: int = 300) -> str:
+        """Build a synthetic transcript with clearly separated paragraphs."""
+        paras = [f"Speaker A: This is paragraph {i}. " + ("word " * (para_len // 5)) for i in range(n_paras)]
+        return "\n\n".join(paras)
+
+    def test_long_text_returns_chunked_response(self, store):
+        text = self._long_transcript()
+        resp = client.post("/memory/ingest", json={"text": text, "source": "meeting.txt"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "count" in data
+        assert "ids" in data
+        assert data["count"] >= 2  # long text must produce multiple chunks
+
+    def test_long_text_stores_multiple_memories(self, store):
+        text = self._long_transcript()
+        resp = client.post("/memory/ingest", json={"text": text, "source": "meeting.txt"})
+        assert store.count() == resp.json()["count"]
+
+    def test_long_text_all_chunks_searchable(self, store):
+        # Each paragraph contains a unique token — verify at least one chunk surfaces it
+        text = "\n\n".join([
+            "Alice discussed the REDIS_TIMEOUT issue in production.",
+            "Bob explained that the KUBERNETES_CLUSTER autoscaling was misconfigured.",
+            "Carol noted that the POSTGRES_REPLICA lag exceeded acceptable thresholds.",
+            "Dave confirmed the NGINX_PROXY rewrite rules were causing redirect loops.",
+            "Eve summarised action items and owners for the DATADOG_ALERT follow-up.",
+        ])
+        client.post("/memory/ingest", json={"text": text, "source": "standup.txt"})
+        resp = client.get("/memory/search?q=KUBERNETES_CLUSTER+autoscaling")
+        assert resp.json()["count"] >= 1
+
+    def test_short_text_still_returns_single_id(self, store):
+        resp = client.post("/memory/ingest", json={"text": "Short deploy note", "source": "ci"})
+        data = resp.json()
+        assert "id" in data
+        assert "ids" not in data
+
+    def test_long_text_dedup_on_second_push(self, store):
+        text = self._long_transcript()
+        payload = {"text": text, "source": "meeting.txt"}
+        first = client.post("/memory/ingest", json=payload).json()
+        second = client.post("/memory/ingest", json=payload).json()
+        assert second["added"] == 0  # all chunks already stored

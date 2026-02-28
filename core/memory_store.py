@@ -79,10 +79,7 @@ class MemoryStore:
             pass  # Non-critical
 
     def semantic_search(self, vector: list, k: int = 5) -> list:
-        results = self.collection.search(vector).limit(k).to_list()
-        for r in results:
-            self.reinforce(r["id"], boost=0.05)
-        return results
+        return self.collection.search(vector).limit(k).to_list()
 
     def hybrid_search(
         self,
@@ -128,21 +125,26 @@ class MemoryStore:
             keyword_results = []
 
         # 3. Merge and deduplicate by id
+        # Semantic results carry _distance from vector search.
+        # Keyword results contain the exact query term — they should rank high
+        # regardless of their embedding distance. Set _distance=0.0 for all
+        # keyword matches (both keyword-only and those already in semantic pool)
+        # so that an exact text match always gets maximum semantic score.
+        keyword_ids = {r["id"] for r in keyword_results}
         combined = {r["id"]: r for r in semantic_results}
         for r in keyword_results:
             if r["id"] not in combined:
                 combined[r["id"]] = r
+        for r in combined.values():
+            if r["id"] in keyword_ids:
+                r["_distance"] = 0.0
 
         # 4. Score and rank
         ranked = sorted(combined.values(), key=compute_score, reverse=True)
 
-        # 5. Reinforce only memories with strong semantic similarity (>= 0.7)
         top = ranked[:k]
-        for r in top:
-            if (1 - r.get("_distance", 1.0)) >= 0.7:
-                self.reinforce(r["id"], boost=0.02)
 
-        # 6. Attach related memory IDs — nearest neighbours from the semantic
+        # 5. Attach related memory IDs — nearest neighbours from the semantic
         #    pool that didn't make it into top-k. No extra search calls needed.
         top_ids = {r["id"] for r in top}
         related_pool = [r for r in semantic_results if r["id"] not in top_ids]
@@ -151,8 +153,13 @@ class MemoryStore:
 
         return top
 
-    def get_by_id(self, memory_id: str) -> dict | None:
-        """Fetch a single memory by exact ID. Returns None if not found."""
+    def get_by_id(self, memory_id: str, reinforce: bool = True) -> dict | None:
+        """Fetch a single memory by exact ID.
+
+        Reinforces importance by a small amount when reinforce=True (default) —
+        an explicit fetch is a strong signal that this memory is useful.
+        Returns None if not found.
+        """
         safe_id = memory_id.replace("'", "''")
         try:
             results = (
@@ -162,7 +169,11 @@ class MemoryStore:
                 .limit(1)
                 .to_list()
             )
-            return results[0] if results else None
+            if not results:
+                return None
+            if reinforce:
+                self.reinforce(memory_id, boost=0.02)
+            return results[0]
         except Exception:
             return None
 
