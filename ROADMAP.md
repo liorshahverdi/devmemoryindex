@@ -3854,7 +3854,7 @@ Repo-scoped search was built as part of Phase 4B / hybrid_search. The `repo` fie
 
 > These are longer-term enhancements for when DevMemoryIndex has active users.
 
-**Recommended implementation order: 7.3 → 7.4 → 7.7 → 7.1 → 7.2 → 7.8 → 7.9 → 7.5 → 7.6**
+**Recommended implementation order: ~~7.3~~ → ~~7.4~~ → 7.7 → 7.1 → 7.2 → 7.8 → 7.9 → 7.5 → 7.6**
 
 **Dependency graph:**
 ```
@@ -3942,24 +3942,25 @@ devmemory hook uninstall /tmp/testrepo
 
 ---
 
-### 7.4 Semantic Diff Awareness
+### 7.4 Semantic Diff Awareness ✅
 
 New connector indexes per-file code diffs as `git_diff` memories. Enables semantic queries about code content ("why did we remove Redis?"), not just commit messages.
 
+**Implemented.** Key details vs. original plan:
+- `commit_limit=2` (down from 50) — performant default; raise once batch write confirmed stable
+- `--unified=0` (not 3) — context-free diffs for tighter signal
+- Batch embedding via `embed_batch()` per commit (not per file)
+- Batch existence check via `store._batch_existing_ids()` (single WHERE IN query per commit)
+- Single `store.add_batch()` call per commit (was N individual `store.add()` calls — caused ~71s/commit on 70 files due to Lance fragment overhead)
+- `_DIAG = True` timing left in place temporarily; remove once commit_limit restored
+
 **New files:**
-- `connectors/diff_connector.py` — `DiffConnector(Connector)`, `name = "diff"`, `commit_limit=50`. `_index_repo()`: `git log -n50` → for each commit: `git diff --unified=3 {sha}~1 {sha}` → `_split_diff_by_file()` splits on `diff --git` lines → one memory per file. Memory type `"git_diff"`, importance 0.6. ID = `sha256(f"{sha}|{repo_name}|{filepath}")`. embed_text uses only +/- lines (not context) for signal density, truncated to 512 chars. Applies `self._redact()` to raw diff.
+- `connectors/diff_connector.py`
 
 **Modified files:**
-- `connectors/registry.py` — add `DiffConnector` after `GitConnector` in `ALL_CONNECTORS`
-- `core/intent_classifier.py` — add "why did", "removed", "deleted", "before" keywords to `architecture` and `recall` intents
-
-**Reuses:** `Connector` base class, `embed()`, `get_git_paths()`, `hashlib.sha256`
-
-**Verify:**
-```bash
-devmemory ingest --source diff
-devmemory search "removed Redis" --type git_diff
-```
+- `connectors/registry.py` — `DiffConnector` added to `ALL_CONNECTORS`
+- `core/intent_classifier.py` — `git_diff` added to recall + architecture `type_boost`; "removed", "deleted", "changed", "what changed", "changed in" keywords added
+- `core/memory_store.py` — `add_batch()`, `_batch_existing_ids()`, `_to_record()` added
 
 ---
 
@@ -4131,8 +4132,8 @@ devmemory search "rate limiting" --type agent_solution  # plan saved
 | **Later** | 2.8, 2.10 | Copilot, Browser connectors | 1 day each | |
 | **Later** | 5.2 | File Watcher (watchdog → filesystem events → auto-ingest) | 1 day | |
 | **Deferred** | 3.2f–3.2i | tag, pin, audit, export commands | — | |
-| **Future** | 7.3 | Git Hook Integration (`devmemory hook install/uninstall/status`) | half day | |
-| **Future** | 7.4 | Semantic Diff Awareness (`DiffConnector`, `git_diff` memory type) | 1 day | |
+| **Done** | 7.3 | Git Hook Integration (`devmemory hook install/uninstall/status`) | half day | |
+| **Done** | 7.4 | Semantic Diff Awareness (`DiffConnector`, `git_diff` memory type) | 1 day | |
 | **Future** | 7.7 | ML Intent Classifier (SGDClassifier + TF-IDF, confidence-gated fallback) | 1 day | |
 | **Future** | 7.1 | Local LLM / RAG (`devmemory ask`, Ollama/llama.cpp, `[llm]` extra) | 2 days | |
 | **Future** | 7.2 | Memory Feedback Loop (save Q&A answers back as agent_solution memories) | half day | |
