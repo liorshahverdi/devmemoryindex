@@ -84,7 +84,7 @@ class DiffConnector(Connector):
                 hashlib.sha256(f"{sha}|{repo_name}|{fp}".encode()).hexdigest()
                 for fp, _ in file_diffs
             ]
-            existing_ids = self._batch_existing(candidate_ids)
+            existing_ids = self.store._batch_existing_ids(candidate_ids)
             t1 = _t(f"  batch_existing ({len(candidate_ids)} ids, {len(existing_ids)} known)", t1)
 
             new_memories: list[Memory] = []
@@ -128,29 +128,13 @@ class DiffConnector(Connector):
             vectors = embed_batch(embed_texts)
             t1 = _t(f"  embed_batch ({len(embed_texts)} texts)", t1)
 
-            for memory, vector in zip(new_memories, vectors):
-                self.store.add(memory, vector)
-            t1 = _t(f"  store.add x{len(new_memories)}", t1)
+            # One batch write instead of N individual adds.
+            added = self.store.add_batch(new_memories, vectors)
+            t1 = _t(f"  add_batch x{added}", t1)
 
-            count += len(new_memories)
+            count += added
 
         return count
-
-    def _batch_existing(self, ids: list[str]) -> set[str]:
-        if not ids:
-            return set()
-        try:
-            escaped = "', '".join(i.replace("'", "''") for i in ids)
-            results = (
-                self.store.collection
-                .search()
-                .where(f"id IN ('{escaped}')")
-                .limit(len(ids))
-                .to_list()
-            )
-            return {r["id"] for r in results}
-        except Exception:
-            return set()
 
     def _split_diff_by_file(self, diff_text: str) -> list[tuple[str, str]]:
         files: list[tuple[str, str]] = []

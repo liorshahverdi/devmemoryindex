@@ -71,7 +71,34 @@ class MemoryStore:
         """Insert a memory. Returns False (no-op) if the id already exists."""
         if self.exists(memory.id):
             return False
-        self.collection.add([{
+        self.collection.add([self._to_record(memory, vector)])
+        _context_cache.invalidate()  # new memory may change context results
+        return True
+
+    def add_batch(self, memories: list[Memory], vectors: list[list]) -> int:
+        """Insert multiple memories in a single DB write. Returns count added.
+
+        Performs one batch exists-check and one collection.add() call, which is
+        dramatically faster than calling add() N times (avoids N separate Lance
+        fragment writes). Duplicates are silently skipped.
+        """
+        if not memories:
+            return 0
+        ids = [m.id for m in memories]
+        existing = self._batch_existing_ids(ids)
+        records = [
+            self._to_record(m, v)
+            for m, v in zip(memories, vectors)
+            if m.id not in existing
+        ]
+        if not records:
+            return 0
+        self.collection.add(records)
+        _context_cache.invalidate()
+        return len(records)
+
+    def _to_record(self, memory: Memory, vector: list) -> dict:
+        return {
             "id": memory.id,
             "type": memory.type,
             "summary": memory.summary,
@@ -84,9 +111,24 @@ class MemoryStore:
             "vector": vector,
             "times_retrieved": 0,
             "times_accessed": 0,
-        }])
-        _context_cache.invalidate()  # new memory may change context results
-        return True
+        }
+
+    def _batch_existing_ids(self, ids: list[str]) -> set[str]:
+        """Return the subset of ids already in the store (single WHERE IN query)."""
+        if not ids:
+            return set()
+        try:
+            escaped = "', '".join(i.replace("'", "''") for i in ids)
+            results = (
+                self.collection
+                .search()
+                .where(f"id IN ('{escaped}')")
+                .limit(len(ids))
+                .to_list()
+            )
+            return {r["id"] for r in results}
+        except Exception:
+            return set()
 
     def exists(self, memory_id: str) -> bool:
         try:
