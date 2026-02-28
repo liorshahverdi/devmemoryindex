@@ -16,6 +16,8 @@ _schema = pa.schema([
     pa.field("tags", pa.list_(pa.string())),
     pa.field("importance", pa.float64()),
     pa.field("vector", pa.list_(pa.float32(), VECTOR_DIM)),
+    pa.field("times_retrieved", pa.int64()),
+    pa.field("times_accessed", pa.int64()),
 ])
 
 class MemoryStore:
@@ -24,7 +26,20 @@ class MemoryStore:
         self.collection = self._init_table()
 
     def _init_table(self):
-        return self.db.create_table("memories", schema=_schema, exist_ok=True)
+        table = self.db.create_table("memories", schema=_schema, exist_ok=True)
+        # Schema migration: add counter columns for stores created before I4
+        existing = {f.name for f in table.schema}
+        missing = {}
+        if "times_retrieved" not in existing:
+            missing["times_retrieved"] = "cast(0 as bigint)"
+        if "times_accessed" not in existing:
+            missing["times_accessed"] = "cast(0 as bigint)"
+        if missing:
+            try:
+                table.add_columns(missing)
+            except Exception:
+                pass  # non-critical — counters default to 0 on read
+        return table
     
     def add(self, memory: Memory, vector: list) -> bool:
         """Insert a memory. Returns False (no-op) if the id already exists."""
@@ -40,7 +55,9 @@ class MemoryStore:
             "timestamp": memory.timestamp,
             "tags": memory.tags,
             "importance": memory.importance,
-            "vector": vector
+            "vector": vector,
+            "times_retrieved": 0,
+            "times_accessed": 0,
         }])
         _context_cache.invalidate()  # new memory may change context results
         return True
@@ -57,6 +74,27 @@ class MemoryStore:
             return len(results) > 0
         except Exception:
             return False
+
+    def _increment_counter(self, memory_id: str, column: str) -> None:
+        """Increment times_retrieved or times_accessed by 1. Best-effort, never raises."""
+        try:
+            safe_id = memory_id.replace("'", "''")
+            results = (
+                self.collection
+                .search()
+                .where(f"id = '{safe_id}'")
+                .limit(1)
+                .to_list()
+            )
+            if not results:
+                return
+            new_val = results[0].get(column, 0) + 1
+            self.collection.update(
+                where=f"id = '{safe_id}'",
+                values={column: new_val},
+            )
+        except Exception:
+            pass
 
     def reinforce(self, memory_id: str, boost: float = 0.05) -> None:
         """Boost importance of a retrieved memory (cap at 1.0). Called after search hits."""
@@ -156,6 +194,15 @@ class MemoryStore:
                 if r.get("type") == "failure_note":
                     r["_score"] *= 0.4
 
+        # CTR dampening (I4): memories retrieved often but rarely accessed are likely
+        # low-signal. Apply a soft penalty when click-through rate < 10% with enough
+        # data (>= 5 retrievals) to avoid penalising brand-new memories.
+        for r in scored:
+            retrieved = r.get("times_retrieved", 0) or 0
+            accessed = r.get("times_accessed", 0) or 0
+            if retrieved >= 5 and (accessed / retrieved) < 0.1:
+                r["_score"] *= 0.8
+
         ranked = sorted(scored, key=lambda r: r["_score"], reverse=True)
 
         top = ranked[:k]
@@ -166,6 +213,10 @@ class MemoryStore:
         related_pool = [r for r in semantic_results if r["id"] not in top_ids]
         for r in top:
             r["related"] = [n["id"] for n in related_pool[:3]]
+
+        # 6. Increment times_retrieved for all top results (best-effort).
+        for r in top:
+            self._increment_counter(r["id"], "times_retrieved")
 
         return top
 
@@ -189,6 +240,7 @@ class MemoryStore:
                 return None
             if reinforce:
                 self.reinforce(memory_id, boost=0.02)
+                self._increment_counter(memory_id, "times_accessed")
             return results[0]
         except Exception:
             return None
@@ -223,6 +275,44 @@ class MemoryStore:
                 buckets[">200"] += 1
         avg = sum(lengths) / len(lengths) if lengths else 0
         return {"total": len(records), "avg_length": round(avg, 1), "buckets": buckets, "short": short}
+
+    def engagement_report(self, min_retrievals: int = 5) -> dict:
+        """Return retrieval-to-access click-through rates per memory.
+
+        Memories with >= min_retrievals but CTR < 10% are flagged as low-engagement
+        candidates for pruning or summary improvement.
+        """
+        records = self.get_all()
+        low_ctr = []
+        high_ctr = []
+        untracked = 0
+        for r in records:
+            retrieved = r.get("times_retrieved", 0) or 0
+            accessed = r.get("times_accessed", 0) or 0
+            if retrieved < min_retrievals:
+                untracked += 1
+                continue
+            ctr = accessed / retrieved
+            entry = {
+                "id": r["id"][:8],
+                "summary": r.get("summary", "")[:80],
+                "type": r.get("type", ""),
+                "times_retrieved": retrieved,
+                "times_accessed": accessed,
+                "ctr": round(ctr, 3),
+            }
+            if ctr < 0.1:
+                low_ctr.append(entry)
+            else:
+                high_ctr.append(entry)
+        low_ctr.sort(key=lambda x: x["times_retrieved"], reverse=True)
+        high_ctr.sort(key=lambda x: x["ctr"], reverse=True)
+        return {
+            "total": len(records),
+            "untracked": untracked,
+            "low_ctr": low_ctr,
+            "high_ctr": high_ctr,
+        }
 
     def count(self) -> int:
         return self.collection.count_rows()

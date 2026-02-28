@@ -13,3 +13,5 @@ class Memory:
     timestamp: datetime
     tags: List[str]             # Optional keywords
     importance: float = 0.5     # 0-1, used for ranking
+    times_retrieved: int = 0    # how many times this memory appeared in search results
+    times_accessed: int = 0     # how many times get_memory was called for it

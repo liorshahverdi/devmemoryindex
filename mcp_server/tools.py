@@ -72,6 +72,7 @@ def build_context(
     repo: str | None = None,
     format: str = "claude",
     intent: str | None = None,
+    files: list[str] | None = None,
 ) -> str:
     """Build AI-ready context from developer memory for the given task or query.
 
@@ -93,13 +94,16 @@ def build_context(
                       "implementation" — boost git_commit + terminal_command
                       "recall"         — boost voice_note, raise recency weight
                     Auto-classified from query if not provided.
+        files:      Optional list of file paths you're actively editing. Extracts stems,
+                    parent dirs, and import keywords to enrich the query automatically.
 
     Returns:
         Formatted string ready to prepend to a prompt or display directly.
     """
+    enriched = f"{query} {_file_signals(files)}".strip() if files else query
     store = get_store()
     engine = ContextEngine(store)
-    result = engine.build(query=query, repo=repo, max_tokens=max_tokens, format=format, intent=intent)
+    result = engine.build(query=enriched, repo=repo, max_tokens=max_tokens, format=format, intent=intent)
     return result["context_text"]
 
 
@@ -207,6 +211,35 @@ def get_memory(memory_id: str) -> dict | None:
     }
 
 
+def _file_signals(files: list[str]) -> str:
+    """Extract query-enriching terms from a list of file paths.
+
+    For each file: takes the stem, parent directory name, and keywords from
+    the first 20 lines (import module names + first docstring line).
+    """
+    signals = []
+    for f in files:
+        p = Path(f)
+        signals.append(p.stem)
+        if p.parent.name:
+            signals.append(p.parent.name)
+        try:
+            with open(f, errors="replace") as fh:
+                head = [fh.readline() for _ in range(20)]
+            for line in head:
+                s = line.strip()
+                if s.startswith("import ") or s.startswith("from "):
+                    # "from core.memory_store import MemoryStore" → ["core.memory_store", "MemoryStore"]
+                    parts = s.split()
+                    signals.extend(parts[1:4])
+                elif s.startswith('"""') or s.startswith("'''"):
+                    # first docstring line — strip quotes and take first 60 chars
+                    signals.append(s.strip('"\' '))
+        except Exception:
+            pass
+    return " ".join(signals)
+
+
 def _git_signals() -> str:
     """Return modified file stems + recent commit subjects as extra query terms."""
     signals = []
@@ -232,21 +265,29 @@ def _git_signals() -> str:
     return " ".join(signals)
 
 
-def get_session_context(task_description: str, repo: str | None = None) -> str:
+def get_session_context(
+    task_description: str,
+    repo: str | None = None,
+    files: list[str] | None = None,
+) -> str:
     """Call once at session start to surface relevant past context before writing any code.
 
     Combines the task description with current git state (modified files, recent commits)
-    to pull the most relevant memories without requiring a precise query.
+    and optionally the content of files you're about to edit, to pull the most relevant
+    memories without requiring a precise query.
 
     Args:
         task_description: What you're about to work on, in plain language.
         repo:             Optional repo filter.
+        files:            Optional list of file paths you're about to edit. Extracts stems,
+                          parent dirs, and import keywords to enrich the query automatically.
 
     Returns:
         Formatted <context>...</context> block ready to prepend to your working context.
     """
     git_extra = _git_signals()
-    enriched_query = f"{task_description} {git_extra}".strip()
+    file_extra = _file_signals(files) if files else ""
+    enriched_query = f"{task_description} {git_extra} {file_extra}".strip()
     store = get_store()
     engine = ContextEngine(store)
     result = engine.build(query=enriched_query, repo=repo, max_tokens=3000, format="claude")
