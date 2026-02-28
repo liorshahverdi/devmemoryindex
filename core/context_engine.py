@@ -34,6 +34,7 @@ class ContextEngine:
         query: str,
         vector: list | None = None,
         repo: str | None = None,
+        type_filter: str | None = None,
         max_tokens: int = 4000,
         max_memories: int = 10,
         format: str = "raw",  # "raw" | "claude" | "markdown"
@@ -48,7 +49,9 @@ class ContextEngine:
             vector = embed(query)
 
         # 1. Hybrid search for candidates
-        candidates = self.store.hybrid_search(query, vector, k=max_memories * 3)
+        candidates = self.store.hybrid_search(
+            query, vector, k=max_memories * 3, type_filter=type_filter
+        )
 
         # 2. Optional repo filter
         if repo:

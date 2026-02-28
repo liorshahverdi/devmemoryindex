@@ -30,6 +30,7 @@ class RAGEngine:
         self,
         query: str,
         repo: str | None = None,
+        type_filter: str | None = None,
         max_context_tokens: int = 3000,
         stream: bool = True,
     ):
@@ -41,6 +42,7 @@ class RAGEngine:
         ctx = self._ctx.build(
             query=query,
             repo=repo,
+            type_filter=type_filter,
             max_tokens=max_context_tokens,
             format="raw",
         )

@@ -8,6 +8,7 @@ console = Console()
 def ask(
     query: str | None = typer.Argument(None, help="Question to ask your memory store."),
     repo: str | None = typer.Option(None, "--repo", "-r", help="Filter context to a specific repo."),
+    memory_type: str | None = typer.Option(None, "--type", "-t", help="Filter context to a memory type (e.g. git_diff, file_content)."),
     model: str | None = typer.Option(None, "--model", "-m", help="Override the configured LLM model."),
     no_stream: bool = typer.Option(False, "--no-stream", help="Collect full answer before printing."),
     save: bool = typer.Option(False, "--save", "-s", help="Save the answer as an agent_solution memory."),
@@ -48,7 +49,7 @@ def ask(
 
     if no_stream:
         try:
-            answer, memories = engine.ask(query, repo=repo, stream=False)
+            answer, memories = engine.ask(query, repo=repo, type_filter=memory_type, stream=False)
         except Exception as e:
             console.print(f"[red]LLM error: {e}[/red]")
             _print_hint()
@@ -61,7 +62,7 @@ def ask(
         answer = ""
         try:
             with Live("", console=console, refresh_per_second=15) as live:
-                for chunk in engine.ask(query, repo=repo, stream=True):
+                for chunk in engine.ask(query, repo=repo, type_filter=memory_type, stream=True):
                     chunks.append(chunk)
                     live.update("".join(chunks))
             answer = "".join(chunks)
