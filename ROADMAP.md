@@ -3887,14 +3887,20 @@ New [ml] dep:           7.7, 7.8
 `devmemory ask "why did we move from Redis?"` → retrieves top memories → injects into LLM prompt → streams cited answer to terminal.
 
 **Implemented. Key details:**
-- `core/llm_backend.py` — `OllamaBackend` (POST `/api/generate`, httpx streaming) + `LlamaCppBackend` + `get_backend()` factory
-- `core/rag_engine.py` — `RAGEngine(store, backend)`: `ask(query, repo, type_filter, stream, plan)`. `_format_memories()` truncates to 2000 chars (preserves newlines, `---` separators). Returns `(stream_gen, planned)` for `stream=True`.
+- `core/llm_backend.py` — `OllamaBackend`: `generate()` (POST `/api/generate`, httpx streaming) + `chat()` (POST `/api/chat` with role tokens — used for RAG answers so instruction-tuned models receive properly formatted roles). `LlamaCppBackend` + `get_backend()` factory.
+- `core/rag_engine.py` — `RAGEngine(store, backend)`: `ask()` calls `backend.chat()` with `[system, user]` messages (not raw prompt completion). `_format_memories()` truncates to 2000 chars, preserves newlines, includes `Date: YYYY-MM-DD` per memory. Default `max_context_tokens=1500` (fits within small-model context windows).
 - `cli/commands/ask.py` — `ask(query, repo, type, model, no_stream, save, voice, voice-duration, speak, no-plan)`, Rich `Live` for streaming
-- `core/query_planner.py` — `QueryPlanner(backend).plan(query)` → `{query, type, reason}`. Pre-retrieval LLM call determines optimal type + reformulated query. Falls back silently. `--no-plan` to skip. Shows routing decision as dim hint line.
+- `core/query_planner.py` — Two-stage hybrid routing:
+  1. **Deterministic pre-routing** (`_quick_route`) — regex patterns handle clear-cut cases instantly, no LLM call: `"how does X work"` → `file_content`, `"when did we add X"` → `git_commit`, `"why did we choose X"` → `agent_solution`, `"what command X"` → `terminal_command`. For voice input (lowercase), synthesizes CamelCase + snake_case from subject words (`"context engine"` → `"ContextEngine context_engine"`) to match definition files over importers.
+  2. **LLM routing** — only fires for ambiguous queries not matched by step 1.
 - `cli/commands/_voice.py` — shared voice input (`transcribe_or_exit`); `DEVMEMORY_WHISPER_MODEL` env var (default `"tiny"`)
 - `cli/commands/_speak.py` — `StreamingSpeaker`: sentence-buffered streaming TTS, en-GB-RyanNeural via edge-tts, macOS `say -v Daniel` fallback
 
-**Modified files:** `core/config.py` (`get_llm_config()`/`set_llm_config()`), `pyproject.toml` (`[llm]`, `[speak]` extras), `cli/main.py`, `cli/commands/search.py` (voice helper extraction)
+**Retrieval improvements (post-launch fixes):**
+- `core/memory_store.py` — `LOWER(summary/raw_text) LIKE` for case-insensitive keyword search (fixes CamelCase identifiers). `_term_match_distance()`: summary hits weighted 2× over raw_text-only hits — definition files rank above importers. Term-match ratio replaces flat `_distance=0.0` for all keyword hits.
+- `connectors/filesystem_connector.py` — summary now includes top-level definitions: `"context_engine.py (lines 1–80) · class ContextEngine, def build"`. Test files (`test_*.py`) get `importance=0.4` (was 0.6).
+
+**Modified files:** `core/config.py`, `pyproject.toml` (`[llm]`, `[speak]` extras), `cli/main.py`, `cli/commands/search.py` (voice helper extraction)
 
 ---
 
