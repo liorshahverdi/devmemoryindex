@@ -20,6 +20,46 @@ _schema = pa.schema([
     pa.field("times_accessed", pa.int64()),
 ])
 
+_STOPWORDS = {
+    "a", "an", "the", "is", "in", "on", "at", "to", "for", "of", "and",
+    "or", "where", "what", "how", "why", "when", "i", "me", "my", "it",
+    "this", "that", "with", "from", "by", "be", "was", "are", "do", "did",
+    "does", "not", "no", "can", "could", "would", "should", "have", "has",
+    "had", "are", "there", "any", "which", "who", "its", "as", "if",
+}
+
+
+def _keyword_where(query: str) -> str:
+    """Build a keyword WHERE clause from individual meaningful query terms.
+
+    Splits the query into words, drops stopwords and short tokens, and returns
+    a SQL OR chain matching summary or raw_text for each term (capped at 6).
+    Falls back to a full-phrase match for very short queries (one meaningful term).
+    """
+    import re
+    words = re.findall(r"\w+", query.lower())
+    terms = [w for w in words if w not in _STOPWORDS and len(w) >= 3]
+
+    if not terms:
+        safe = query.replace("'", "''")
+        return f"summary LIKE '%{safe}%' OR raw_text LIKE '%{safe}%'"
+
+    # Deduplicate while preserving order, cap to avoid huge WHERE clauses.
+    seen: set[str] = set()
+    unique_terms: list[str] = []
+    for t in terms:
+        if t not in seen:
+            seen.add(t)
+            unique_terms.append(t)
+    unique_terms = unique_terms[:6]
+
+    parts = []
+    for term in unique_terms:
+        safe = term.replace("'", "''")
+        parts.append(f"summary LIKE '%{safe}%' OR raw_text LIKE '%{safe}%'")
+    return " OR ".join(parts)
+
+
 class MemoryStore:
     def __init__(self, db_path="./memory_db"):
         self.db = lancedb.connect(db_path)
@@ -214,9 +254,11 @@ class MemoryStore:
             sem_q = sem_q.where(where_clause)
         semantic_results = sem_q.to_list()
 
-        # 2. Keyword search — catch exact term matches semantic may miss
-        safe_query = query.replace("'", "''")
-        kw_where = f"summary LIKE '%{safe_query}%' OR raw_text LIKE '%{safe_query}%'"
+        # 2. Keyword search — catch exact term matches semantic may miss.
+        # Use individual meaningful terms rather than the full query string so
+        # natural-language questions ("where is buffer playback in the code")
+        # still match memories containing "buffer" or "playback".
+        kw_where = _keyword_where(query)
         if where_clause:
             kw_where = f"({kw_where}) AND {where_clause}"
         try:
