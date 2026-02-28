@@ -44,6 +44,27 @@ class MemoryStore:
                 table.add_columns(missing)
             except Exception:
                 pass  # non-critical — counters default to 0 on read
+
+        # Self-healing scan check: Lance 2.0.0 has a bug where add_columns
+        # fills old fragments lazily, but once newer fragments have physical
+        # counter values the mixed state causes a non-nullable null panic.
+        # drop_columns is metadata-only (no scan), so we can safely drop and
+        # re-add to put all fragments back into a consistent lazy-expression
+        # state. Only runs when a scan actually fails.
+        try:
+            self.db.open_table("memories").search().limit(1).to_list()
+        except Exception:
+            counter_cols = ["times_retrieved", "times_accessed"]
+            present = [c for c in counter_cols if c in {f.name for f in table.schema}]
+            if present:
+                try:
+                    table.drop_columns(present)
+                except Exception:
+                    pass
+            try:
+                table.add_columns({c: "cast(0 as bigint)" for c in counter_cols})
+            except Exception:
+                pass
         return table
     
     def add(self, memory: Memory, vector: list) -> bool:
@@ -93,7 +114,7 @@ class MemoryStore:
             )
             if not results:
                 return
-            new_val = results[0].get(column, 0) + 1
+            new_val = (results[0].get(column) or 0) + 1
             self.collection.update(
                 where=f"id = '{safe_id}'",
                 values={column: new_val},
