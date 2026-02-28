@@ -126,8 +126,10 @@ class FilesystemConnector(Connector):
                 continue
 
             raw_text = self._redact(chunk_text[:MAX_CHUNK_CHARS])
-            summary = f"{rel_path} (lines {start + 1}–{end})"[:200]
-            embed_text = f"{rel_path}\n{chunk_text[:512]}"
+            defs = _extract_definitions(chunk_text)
+            def_suffix = f" · {defs}" if defs else ""
+            summary = f"{rel_path} (lines {start + 1}–{end}){def_suffix}"[:200]
+            embed_text = f"{rel_path} {defs}\n{chunk_text[:512]}"
 
             memory = Memory(
                 id=mem_id,
@@ -171,8 +173,23 @@ def _infer_repo(path: Path) -> str | None:
     return None
 
 
+def _extract_definitions(chunk_text: str) -> str:
+    """Extract top-level class and function names defined in a code chunk."""
+    import re
+    names = []
+    for line in chunk_text.splitlines():
+        m = re.match(r"^(class|def|function|fn|func|type|struct|interface)\s+(\w+)", line)
+        if m:
+            names.append(f"{m.group(1)} {m.group(2)}")
+    return ", ".join(names[:5])
+
+
 def _estimate_importance(path: Path) -> float:
     name = path.stem.lower()
+    # Test files are lower-priority — useful for usage examples but shouldn't
+    # outrank implementation files when searching for "how does X work".
+    if name.startswith("test_") or name.endswith("_test") or "tests" in path.parts:
+        return 0.4
     if name in ("main", "app", "index", "server", "cli", "core", "api"):
         return 0.7
     if path.suffix.lower() in CONFIG_EXTENSIONS:
