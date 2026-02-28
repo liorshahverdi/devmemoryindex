@@ -151,13 +151,18 @@ regardless of how many times the session file is scanned.
 
 ```bash
 devmemory search "error handling" --type copilot_chat
-# Pick a result ID from the output, then:
-devmemory get <memory-id>
 ```
 
-The `raw_text` field contains the full assistant response (redacted of any
-secrets, up to 3000 characters). The `source` field shows the path to the
-session JSON file.
+Each row in the results table shows an 8-character ID prefix in the first
+column. Pass it to `devmemory get` to see the full record:
+
+```bash
+devmemory get 95a2539b
+```
+
+The Content panel shows the full assistant response (redacted of any secrets,
+up to 3000 characters). The metadata panel shows `source` (path to the `.jsonl`
+session file) and `repo` (the workspace folder the session belonged to).
 
 ### Troubleshooting
 

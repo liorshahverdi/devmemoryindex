@@ -67,5 +67,9 @@ app.command()(serve)
 from cli.commands.log_cmd import log
 app.command()(log)
 
+# Memory inspector
+from cli.commands.get_cmd import get
+app.command()(get)
+
 if __name__ == "__main__":
     app()

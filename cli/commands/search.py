@@ -103,6 +103,7 @@ def search(
     table = Table(title=f"Results for: {query}")
     if is_recall:
         table.add_column("Date", style="dim", width=12)
+    table.add_column("ID", style="dim", width=10)
     table.add_column("Type", style="cyan", width=16)
     table.add_column("Summary", style="white")
     table.add_column("Repo", style="green", width=16)
@@ -114,7 +115,8 @@ def search(
         except Exception:
             date_str = ""
 
-        row = [r.get("type", ""), r.get("summary", "")[:80], r.get("repo", "N/A") or "N/A"]
+        short_id = (r.get("id") or "")[:8]
+        row = [short_id, r.get("type", ""), r.get("summary", "")[:80], r.get("repo", "N/A") or "N/A"]
         if is_recall:
             table.add_row(date_str, *row)
         else:

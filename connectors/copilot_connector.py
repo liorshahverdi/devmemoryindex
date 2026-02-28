@@ -1,19 +1,25 @@
 """
 Copilot Connector — indexes GitHub Copilot Chat conversation history.
 
-Scans VS Code's extension storage directory for Copilot Chat JSON session
-files and extracts assistant responses. Best-effort: silently returns 0 if
-the storage directory doesn't exist or contains an unrecognised format.
+VS Code stores chat sessions as JSONL files in per-workspace storage:
 
-Storage location (macOS):
-  ~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/
+  ~/Library/Application Support/Code/User/workspaceStorage/
+      {workspace_hash}/chatSessions/{session_id}.jsonl
+
+Each .jsonl file contains incremental updates:
+  kind=0  initial session state
+  kind=1  single-key patch  {"k": ["requests", 0, "result"], "v": ...}
+  kind=2  array-append      {"k": ["requests"], "v": [full_array]}
+
+Assistant text appears in kind=2 lines where k ends with "response",
+as parts that have a "value" string field (inline text) or "kind"=="thinking".
 
 Memory fields:
   type        "copilot_chat"
-  summary     first 200 chars of assistant response
-  raw_text    response content (redacted, up to 3000 chars)
-  source      path to the session JSON file
-  repo        None (Copilot sessions are not repo-scoped)
+  summary     first 200 chars of response (title + first text chunk)
+  raw_text    full text of the response (redacted, up to 3000 chars)
+  source      path to the .jsonl file
+  repo        detected from workspace.json if present
   timestamp   session file mtime
   importance  0.75
   tags        ["copilot", "agent"]
@@ -28,129 +34,178 @@ from connectors.base import Connector
 from core.embeddings import embed
 from core.schema import Memory
 
-MIN_RESPONSE_LEN = 100  # skip very short acknowledgements
+MIN_RESPONSE_LEN = 100  # skip very short tool-only responses
 
-# Extension storage paths per platform
-_VSCODE_GLOBAL_STORAGE = Path.home() / "Library" / "Application Support" / "Code" / "User" / "globalStorage"
-_VSCODE_INSIDERS_STORAGE = Path.home() / "Library" / "Application Support" / "Code - Insiders" / "User" / "globalStorage"
-_COPILOT_DIR_NAME = "github.copilot-chat"
+_VSCODE_WORKSPACE_STORAGE = (
+    Path.home() / "Library" / "Application Support" / "Code" / "User" / "workspaceStorage"
+)
+_VSCODE_INSIDERS_WORKSPACE_STORAGE = (
+    Path.home() / "Library" / "Application Support" / "Code - Insiders" / "User" / "workspaceStorage"
+)
 
 
-def _find_copilot_dirs() -> list[Path]:
-    candidates = []
-    for base in (_VSCODE_GLOBAL_STORAGE, _VSCODE_INSIDERS_STORAGE):
-        d = base / _COPILOT_DIR_NAME
-        if d.is_dir():
-            candidates.append(d)
-    return candidates
+def _find_chat_session_dirs() -> list[Path]:
+    """Return all chatSessions/ directories across workspace storage."""
+    dirs: list[Path] = []
+    for base in (_VSCODE_WORKSPACE_STORAGE, _VSCODE_INSIDERS_WORKSPACE_STORAGE):
+        if not base.is_dir():
+            continue
+        for ws_dir in base.iterdir():
+            cs = ws_dir / "chatSessions"
+            if cs.is_dir():
+                dirs.append(cs)
+    return dirs
+
+
+def _workspace_folder(chat_sessions_dir: Path) -> str | None:
+    """Read the workspace.json next to chatSessions to get the folder path."""
+    try:
+        ws_json = chat_sessions_dir.parent / "workspace.json"
+        data = json.loads(ws_json.read_text())
+        folder = data.get("folder", "")
+        # Strip file:// prefix
+        if folder.startswith("file://"):
+            folder = folder[7:]
+        return folder or None
+    except Exception:
+        return None
 
 
 class CopilotConnector(Connector):
     name = "copilot"
 
     def collect(self) -> int:
-        dirs = _find_copilot_dirs()
+        dirs = _find_chat_session_dirs()
         if not dirs:
             return 0
         count = 0
-        for d in dirs:
-            for json_file in sorted(d.rglob("*.json")):
+        for cs_dir in dirs:
+            repo = _workspace_folder(cs_dir)
+            for jsonl_file in sorted(cs_dir.glob("*.jsonl")):
                 try:
-                    count += self._parse_session(json_file)
+                    count += self._parse_session(jsonl_file, repo=repo)
                 except Exception:
                     pass
         return count
 
-    def _parse_session(self, path: Path) -> int:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
-        except (json.JSONDecodeError, OSError):
+    def _parse_session(self, path: Path, repo: str | None = None) -> int:
+        responses = _extract_responses_from_jsonl(path)
+        if not responses:
             return 0
 
-        messages = _extract_assistant_messages(data)
         mtime = datetime.fromtimestamp(path.stat().st_mtime)
-
         added = 0
-        for msg in messages:
-            msg = msg.strip()
-            if len(msg) < MIN_RESPONSE_LEN:
+
+        for text in responses:
+            text = text.strip()
+            if len(text) < MIN_RESPONSE_LEN:
                 continue
 
-            mem_id = hashlib.sha256(msg[:500].encode()).hexdigest()
+            mem_id = hashlib.sha256(text[:500].encode()).hexdigest()
             if self.store.exists(mem_id):
                 continue
 
-            summary = msg[:200].replace("\n", " ")
+            summary = text[:200].replace("\n", " ")
             memory = Memory(
                 id=mem_id,
                 type="copilot_chat",
                 summary=summary,
-                raw_text=self._redact(msg[:3000]),
+                raw_text=self._redact(text[:3000]),
                 source=str(path),
-                repo=None,
+                repo=repo,
                 timestamp=mtime,
                 tags=["copilot", "agent"],
                 importance=0.75,
             )
             self.store.add(memory, embed(summary[:512]))
             added += 1
+
         return added
 
 
-# ── Helpers ────────────────────────────────────────────────────────────
+# ── JSONL parsing ────────────────────────────────────────────────────────────
 
 
-def _extract_assistant_messages(data, _depth: int = 0) -> list[str]:
+def _extract_responses_from_jsonl(path: Path) -> list[str]:
     """
-    Recursively extract assistant/model text from any Copilot JSON structure.
+    Parse a Copilot Chat .jsonl file and return assistant response texts.
 
-    Handles several observed formats:
-      - {"role": "assistant", "content": "..."}
-      - {"role": "model", "parts": [{"text": "..."}]}
-      - {"messages": [...]}
-      - {"turns": [...]} / {"responses": [...]} / {"conversations": [...]}
-      - top-level list of session objects
+    The format is an incremental log:
+      kind=0  full initial state  {"kind": 0, "v": {...}}
+      kind=1  patch a field       {"kind": 1, "k": ["requests", 0, "result"], "v": ...}
+      kind=2  replace a field     {"kind": 2, "k": ["requests"], "v": [...]}
+
+    We watch for kind=2 lines whose key path ends with "response" — those
+    contain the list of response parts for each request/turn.
     """
-    if _depth > 8:  # guard against deeply nested structures
-        return []
+    responses: list[str] = []
 
-    messages: list[str] = []
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return responses
 
-    if isinstance(data, list):
-        for item in data:
-            messages.extend(_extract_assistant_messages(item, _depth + 1))
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
 
-    elif isinstance(data, dict):
-        role = data.get("role", "")
+        if entry.get("kind") != 2:
+            continue
 
-        # Pattern: {"role": "assistant"|"model", "content": str}
-        if role in ("assistant", "model"):
-            content = data.get("content", "")
-            if isinstance(content, str) and content.strip():
-                messages.append(content.strip())
-            elif isinstance(content, list):
-                # {"content": [{"type": "text", "text": "..."}]}
-                text = " ".join(
-                    b.get("text", "") for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ).strip()
-                if text:
-                    messages.append(text)
+        k = entry.get("k", [])
+        if not isinstance(k, list) or not k:
+            continue
 
-        # Pattern: {"role": "model", "parts": [{"text": "..."}]}
-        if role == "model" and "parts" in data:
-            text = " ".join(
-                p.get("text", "") for p in data["parts"]
-                if isinstance(p, dict)
-            ).strip()
-            if text:
-                messages.append(text)
+        # We want keys that end with "response"
+        if k[-1] != "response":
+            continue
 
-        # Recurse into known list keys
-        for key in ("messages", "turns", "responses", "conversations",
-                    "entries", "items", "history", "chatHistory"):
-            if key in data and isinstance(data[key], list):
-                for item in data[key]:
-                    messages.extend(_extract_assistant_messages(item, _depth + 1))
+        parts = entry.get("v", [])
+        if not isinstance(parts, list):
+            continue
 
-    return messages
+        text = _parts_to_text(parts)
+        if text:
+            responses.append(text)
+
+    return responses
+
+
+def _parts_to_text(parts: list) -> str:
+    """
+    Concatenate text from response part objects.
+
+    VS Code response parts we care about:
+      - {"value": "...", "supportThemeIcons": ...}   → inline markdown text
+      - {"kind": "thinking", "value": "..."}          → model reasoning
+
+    Parts we skip:
+      - {"kind": "toolInvocationSerialized", ...}
+      - {"kind": "inlineReference", ...}
+      - empty thinking parts (value == "")
+    """
+    chunks: list[str] = []
+
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+
+        kind = part.get("kind")
+
+        if kind == "toolInvocationSerialized":
+            continue
+        if kind == "inlineReference":
+            continue
+
+        value = part.get("value", "")
+        if not isinstance(value, str) or not value.strip():
+            continue
+
+        chunks.append(value)
+
+    return "".join(chunks).strip()
