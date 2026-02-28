@@ -69,10 +69,10 @@ class RAGEngine:
         lines = []
         for i, m in enumerate(memories, 1):
             summary = m.get("summary", "")
-            raw = (m.get("raw_text") or "")[:400].replace("\n", " ")
+            raw = (m.get("raw_text") or "")[:2000]
             body = raw if raw else summary
-            lines.append(f"[MEMORY-{i}] {summary}\n  {body}")
-        return "\n\n".join(lines)
+            lines.append(f"[MEMORY-{i}] {summary}\n{body}")
+        return "\n\n---\n\n".join(lines)
 
     def save_answer(
         self,
