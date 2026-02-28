@@ -86,5 +86,12 @@ try:
 except ImportError:
     pass
 
+# Phase 7.1 — Local LLM / RAG (requires [llm] extra)
+try:
+    from cli.commands.ask import ask
+    app.command()(ask)
+except ImportError:
+    pass
+
 if __name__ == "__main__":
     app()

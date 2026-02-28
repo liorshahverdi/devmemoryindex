@@ -200,6 +200,33 @@ def delete_api_key() -> None:
     save(data)
 
 
+# ── LLM helpers ──────────────────────────────────────────────────────
+
+
+def get_llm_config() -> dict:
+    """Return the [llm] config section, with sensible defaults.
+
+    Keys:
+      backend  — "ollama" (default) or "llamacpp"
+      model    — model name for Ollama (default: "mistral")
+      url      — server URL override
+    """
+    return load().get("llm", {})
+
+
+def set_llm_config(backend: str | None = None, model: str | None = None, url: str | None = None) -> None:
+    """Persist one or more [llm] keys to config.toml."""
+    data = load()
+    llm = data.setdefault("llm", {})
+    if backend is not None:
+        llm["backend"] = backend
+    if model is not None:
+        llm["model"] = model
+    if url is not None:
+        llm["url"] = url
+    save(data)
+
+
 # ── Schedule helpers ──────────────────────────────────────────────────
 
 _DEFAULT_INTERVALS: dict[str, int] = {
