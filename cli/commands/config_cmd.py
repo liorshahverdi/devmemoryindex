@@ -8,11 +8,7 @@ console = Console()
 app = typer.Typer(help="Manage DevMemoryIndex configuration.")
 
 
-@app.command("add")
-def add_repo(
-    path: str = typer.Argument(..., help="Path to a git repository to track"),
-):
-    """Add a git repository to the ingest list."""
+def _add_repo_impl(path: str) -> None:
     resolved = str(Path(path).expanduser().resolve())
     if not Path(resolved).is_dir():
         console.print(f"[red]Path not found: {resolved}[/red]")
@@ -23,16 +19,44 @@ def add_repo(
         console.print(f"[yellow]Already tracked:[/yellow] {resolved}")
 
 
-@app.command("remove")
-def remove_repo(
-    path: str = typer.Argument(..., help="Path to remove from tracking"),
-):
-    """Remove a git repository from the ingest list."""
+def _remove_repo_impl(path: str) -> None:
     resolved = str(Path(path).expanduser().resolve())
     if cfg.remove_git_path(resolved):
         console.print(f"[yellow]Removed:[/yellow] {resolved}")
     else:
         console.print(f"[red]Not found in config:[/red] {resolved}")
+
+
+@app.command("add-repo")
+def add_repo(
+    path: str = typer.Argument(..., help="Path to a git repository to track"),
+):
+    """Add a git repository to the ingest list."""
+    _add_repo_impl(path)
+
+
+@app.command("add")
+def add_repo_alias(
+    path: str = typer.Argument(..., help="Path to a git repository to track"),
+):
+    """Alias for add-repo."""
+    _add_repo_impl(path)
+
+
+@app.command("remove-repo")
+def remove_repo(
+    path: str = typer.Argument(..., help="Path to remove from tracking"),
+):
+    """Remove a git repository from the ingest list."""
+    _remove_repo_impl(path)
+
+
+@app.command("remove")
+def remove_repo_alias(
+    path: str = typer.Argument(..., help="Path to remove from tracking"),
+):
+    """Alias for remove-repo."""
+    _remove_repo_impl(path)
 
 
 @app.command("list")
