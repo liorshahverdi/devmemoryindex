@@ -103,6 +103,20 @@ def build_context(
     return result["context_text"]
 
 
+def _auto_summarize(raw_text: str) -> str:
+    """Extract a summary from raw_text when none is provided.
+
+    Takes the first sentence longer than 30 characters that contains a space.
+    Falls back to the first 100 characters of raw_text if no sentence qualifies.
+    No LLM required — pure heuristic.
+    """
+    for sentence in raw_text.replace("\n", " ").split("."):
+        s = sentence.strip()
+        if len(s) > 30 and " " in s:
+            return s[:200]
+    return raw_text.strip()[:200]
+
+
 def remember_memory(
     summary: str,
     raw_text: str | None = None,
@@ -133,16 +147,21 @@ def remember_memory(
     Returns:
         {"status": "ok", "id": "<hash>"} on success.
         {"status": "duplicate", "id": "<hash>"} if already stored.
+        A "warning" key is included when the summary is too short for reliable retrieval.
     """
     store = get_store()
     raw = raw_text or summary
+
+    # Quality check: auto-generate summary from raw_text if summary is blank/missing
+    effective_summary = summary.strip() if summary.strip() else _auto_summarize(raw)
+
     mem_id = hashlib.sha256(raw[:500].encode()).hexdigest()
     if store.exists(mem_id):
         return {"status": "duplicate", "id": mem_id}
     memory = Memory(
         id=mem_id,
         type=memory_type,
-        summary=summary[:200],
+        summary=effective_summary[:200],
         raw_text=raw,
         source="mcp_agent",
         repo=repo,
@@ -151,7 +170,10 @@ def remember_memory(
         importance=importance,
     )
     store.add(memory, embed(memory.summary))
-    return {"status": "ok", "id": mem_id}
+    result: dict = {"status": "ok", "id": mem_id}
+    if len(effective_summary) < 20:
+        result["warning"] = "summary may be too short for reliable retrieval — consider a more descriptive summary"
+    return result
 
 
 def get_memory(memory_id: str) -> dict | None:

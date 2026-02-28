@@ -196,6 +196,34 @@ class MemoryStore:
     def delete(self, memory_id: str):
         self.collection.delete(f"id = '{memory_id}'")
 
+    def summary_quality(self) -> dict:
+        """Return summary length distribution and IDs of short-summary memories.
+
+        A summary under 20 characters is flagged as low-quality — too short to
+        reliably match future search queries.
+        """
+        records = self.get_all()
+        lengths = [len(r.get("summary") or "") for r in records]
+        short = [
+            {"id": r["id"][:8], "summary": r.get("summary", ""), "type": r.get("type", "")}
+            for r in records
+            if len(r.get("summary") or "") < 20
+        ]
+        buckets = {"<20": 0, "20-50": 0, "51-100": 0, "101-200": 0, ">200": 0}
+        for l in lengths:
+            if l < 20:
+                buckets["<20"] += 1
+            elif l <= 50:
+                buckets["20-50"] += 1
+            elif l <= 100:
+                buckets["51-100"] += 1
+            elif l <= 200:
+                buckets["101-200"] += 1
+            else:
+                buckets[">200"] += 1
+        avg = sum(lengths) / len(lengths) if lengths else 0
+        return {"total": len(records), "avg_length": round(avg, 1), "buckets": buckets, "short": short}
+
     def count(self) -> int:
         return self.collection.count_rows()
 
