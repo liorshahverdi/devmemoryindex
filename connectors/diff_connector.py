@@ -4,9 +4,12 @@ from datetime import datetime
 from pathlib import Path
 
 from core.schema import Memory
-from core.embeddings import embed
+from core.embeddings import embed_batch
 from core.config import get_git_paths
 from connectors.base import Connector
+
+# Skip file diffs larger than this — likely minified/generated files
+_MAX_FILE_DIFF_CHARS = 8000
 
 
 class DiffConnector(Connector):
@@ -50,27 +53,40 @@ class DiffConnector(Connector):
                 continue
             sha, subject, ts = parts
 
+            # --unified=0: no context lines — smaller output, faster git, same signal
+            # since we only embed +/- lines anyway.
             diff_result = subprocess.run(
-                ["git", "-C", path, "diff", "--unified=3", f"{sha}~1", sha],
+                ["git", "-C", path, "diff", "--unified=0", f"{sha}~1", sha],
                 capture_output=True, text=True, timeout=30,
             )
             if diff_result.returncode != 0 or not diff_result.stdout.strip():
                 continue
 
-            for filepath, file_diff in self._split_diff_by_file(diff_result.stdout):
-                mem_id = hashlib.sha256(
-                    f"{sha}|{repo_name}|{filepath}".encode()
-                ).hexdigest()
+            file_diffs = self._split_diff_by_file(diff_result.stdout)
+            if not file_diffs:
+                continue
 
-                if self.store.exists(mem_id):
+            # Batch exists check — one WHERE IN query per commit instead of N queries.
+            candidate_ids = [
+                hashlib.sha256(f"{sha}|{repo_name}|{fp}".encode()).hexdigest()
+                for fp, _ in file_diffs
+            ]
+            existing_ids = self._batch_existing(candidate_ids)
+
+            # Build memories and embed texts for all new files in one pass.
+            new_memories: list[Memory] = []
+            embed_texts: list[str] = []
+
+            for (filepath, file_diff), mem_id in zip(file_diffs, candidate_ids):
+                if mem_id in existing_ids:
                     continue
+                if len(file_diff) > _MAX_FILE_DIFF_CHARS:
+                    continue  # skip minified / generated files
 
                 raw_text = self._redact(
                     f"commit: {sha[:8]} — {subject}\nfile: {filepath}\n\n{file_diff}"
                 )
 
-                # Embed only the changed lines (+/-) for signal density.
-                # Exclude the +++ / --- header lines which are just filenames.
                 change_lines = [
                     l for l in file_diff.splitlines()
                     if (l.startswith("+") or l.startswith("-"))
@@ -80,7 +96,7 @@ class DiffConnector(Connector):
                 embed_text = f"{subject} {filepath}\n" + "\n".join(change_lines)
 
                 suffix = Path(filepath).suffix.lstrip(".") or "file"
-                memory = Memory(
+                new_memories.append(Memory(
                     id=mem_id,
                     type="git_diff",
                     summary=f"{subject[:100]} — {Path(filepath).name}",
@@ -90,12 +106,36 @@ class DiffConnector(Connector):
                     timestamp=datetime.fromtimestamp(int(ts)),
                     tags=["git", "diff", suffix],
                     importance=0.6,
-                )
-                vector = embed(embed_text[:512])
+                ))
+                embed_texts.append(embed_text[:512])
+
+            if not new_memories:
+                continue
+
+            # One embed_batch call per commit instead of one embed() per file.
+            vectors = embed_batch(embed_texts)
+            for memory, vector in zip(new_memories, vectors):
                 self.store.add(memory, vector)
                 count += 1
 
         return count
+
+    def _batch_existing(self, ids: list[str]) -> set[str]:
+        """Return the subset of ids that already exist in the store."""
+        if not ids:
+            return set()
+        try:
+            escaped = "', '".join(i.replace("'", "''") for i in ids)
+            results = (
+                self.store.collection
+                .search()
+                .where(f"id IN ('{escaped}')")
+                .limit(len(ids))
+                .to_list()
+            )
+            return {r["id"] for r in results}
+        except Exception:
+            return set()
 
     def _split_diff_by_file(self, diff_text: str) -> list[tuple[str, str]]:
         """Split a full git diff into (filepath, per_file_diff) pairs."""
