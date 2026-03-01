@@ -120,10 +120,11 @@
 - Total: ~230 tests
 
 **What's next:**
-1. **Phase 7.5** — VSCode Extension (TypeScript, talks to REST API)
-2. **Phase 7.6** — Web UI (Svelte SPA, 5 tabs, streaming RAG)
-3. **`ask_memory()` MCP tool** — inline RAG answer synthesized by LLM without leaving Claude (lower priority)
-4. **Terminal connector: `speaker_filter` in CLI search** — expose `--speaker` flag on `devmemory search` to leverage the existing `hybrid_search(speaker_filter=...)` parameter
+1. **Stale `file_content` chunk eviction** — `FilesystemConnector._index_file()` should delete old chunks for a file when content changes. Currently stale chunks accumulate for months. (Immediate, self-contained fix.)
+2. **Phase 8 — Jarvis Mode** — Always-on "hey devmem" wake word, speaker gate ("Do I know you?"), VAD-gated query recording, intent routing, punchy TTS responses, macOS menu bar. See Phase 8 spec below.
+3. **Phase 7.5** — VSCode Extension (deferred — see spec below)
+4. **Phase 7.6** — Web UI (deferred — see spec below)
+5. **`--speaker` flag on `devmemory search`** — tiny CLI addition to expose existing `hybrid_search(speaker_filter=...)` parameter
 
 ---
 
@@ -4109,6 +4110,255 @@ devmemory map --clusters 10 --verbose
 devmemory plan "add rate limiting to the API"
 devmemory plan "fix hybrid search scoring" --repo devmemoryindex --save
 ```
+
+---
+
+## Phase 8 — Jarvis Mode (Always-On Voice Assistant)
+
+> **Goal:** Make DevMemoryIndex feel like a home voice assistant. Say "hey devmem", ask anything, get a spoken answer. No terminal. No keyboard. Recognises its owner; rejects strangers.
+
+### Design principles
+
+- **Sub-2s end-to-end** from wake word to first spoken word.
+- **Punchy responses** — Jarvis-style, not a wall of text. "Found it." / "Nothing on that." / "Three things. The most recent: ..."
+- **Silent by default** — menu bar icon only; no intrusive notifications.
+- **Owner-gated** — speaker verification before every query. Strangers get "Do I know you?" and nothing else.
+- **Graceful degradation** — each sub-phase works independently. Wake word without menu bar is fine. TTS without proactive surfacing is fine.
+
+---
+
+### Full pipeline
+
+```
+[Always-on mic]
+      │
+      ▼
+[openWakeWord]  ──── "hey devmem" not detected ──► loop
+      │
+      ▼ detected
+[Record 2s]
+      │
+      ▼
+[Speaker gate — pyannote]
+      ├── not enrolled  ──► "I'm not set up yet. Run: devmemory voice enroll"
+      ├── unrecognised  ──► "Do I know you?"
+      └── owner ✓
+            │
+            ▼
+      [VAD-gated query recording]  (stop on 1.2s silence)
+            │
+            ▼
+      [Whisper tiny — transcribe]
+            │
+            ▼
+      [Intent router]
+            ├── recall    ──► hybrid_search, sort by time, speak timeline
+            ├── search    ──► hybrid_search, speak top result
+            ├── ask       ──► RAGEngine.ask(), stream → TTS
+            └── remember  ──► remember_memory, "Got it."
+```
+
+---
+
+### 8.1 Wake Word Detection
+
+**New file:** `daemon/wake_word.py`
+
+- Uses `openwakeword` (MIT, CPU-only, no cloud, ~4MB model).
+- Listens on default mic in a background thread; posts to a `queue.Queue` on detection.
+- Ships with a pre-trained `"hey_devmem"` model (generated via openWakeWord's synthetic data pipeline — phrase sounds close enough to its built-in `"hey_jarvis"` model to use as a starting point, with fine-tuning on 1000 synthetic samples).
+- Falls back to `"hey_jarvis"` if custom model not found (configurable via `devmemory config set wake-word`).
+- Threshold configurable: `devmemory config set wake-threshold 0.7` (default 0.5).
+- Integrated into `daemon/scheduler.py` as a `threading.Thread` alongside the connector loop.
+
+**New files:** `daemon/wake_word.py`, `data/hey_devmem.tflite` (pre-trained wake word model)
+
+**Modified:** `daemon/scheduler.py` (start wake thread), `pyproject.toml` (`[jarvis]` extra)
+
+**New dep:** `openwakeword>=0.6`
+
+**Verify:**
+```bash
+uv pip install 'devmemoryindex[jarvis]'
+devmemory daemon start --jarvis   # starts wake word thread
+# say "hey devmem" → chime plays
+```
+
+---
+
+### 8.2 Speaker Gate
+
+**Modified:** `core/speaker_profile.py`, `daemon/wake_word.py`
+
+After wake word fires, record a 2-second clip and run it through the existing pyannote speaker embedding + cosine gate:
+
+```python
+profile = load_profile()
+if profile is None:
+    speak("I'm not set up yet. Run: devmemory voice enroll.")
+    return
+if not is_self(get_embedding(clip), profile):
+    speak("Do I know you?")
+    return
+# proceed to query recording
+```
+
+- `is_self()` already exists in `core/speaker_profile.py` — no new logic needed.
+- The 2s clip is reused as the start of query recording if speaker is confirmed (avoids re-recording).
+- Threshold defaults to 0.25 (existing value); tunable via `devmemory config set speaker-threshold`.
+
+**No new files.** Just wires the gate into `daemon/wake_word.py`.
+
+---
+
+### 8.3 Voice Pipeline Orchestration
+
+**New file:** `daemon/voice_pipeline.py`
+
+Owns the stateful loop after the speaker gate clears:
+
+1. **VAD-gated recording** — extend existing sounddevice recording; use `webrtcvad` to detect end-of-speech (1.2s silence → stop). Avoids fixed-duration clips.
+2. **Whisper transcription** — `whisper.load_model("tiny")` (already in `[voice]`). Returns text.
+3. **Intent routing** — `classify_intent(text)` → maps to action:
+   - `recall` → `store.hybrid_search(..., sort_by_time=True)` → timeline response
+   - `search` / `architecture` / `implementation` → `hybrid_search` → top result spoken
+   - `ask` / `debug` → `RAGEngine.ask()` streamed to TTS
+   - bare "remember ..." prefix → `store.add()` → "Got it."
+4. **Response** — via `daemon/response_formatter.py` → `edge-tts` / `say` fallback.
+
+**New dep:** `webrtcvad` (Google WebRTC VAD, MIT, pure C extension — very low overhead).
+
+**New files:** `daemon/voice_pipeline.py`, `daemon/response_formatter.py`
+
+---
+
+### 8.4 Jarvis Response Style
+
+**New file:** `daemon/response_formatter.py`
+
+Rules for spoken output — enforced here, not in the retrieval layer:
+
+| Situation | Spoken response |
+|---|---|
+| 0 results | "Nothing on that." |
+| 1 result | "[summary, ≤ 15 words]." |
+| 2–3 results | "Two things. [top summary]. Want the others?" |
+| > 3 results | "Three things. [top summary]. Want the rest?" |
+| remember success | "Got it." |
+| RAG answer | Stream directly to TTS, sentence-buffered (reuses `_speak.py`) |
+| Error | "Can't reach the store right now." |
+
+- User's name used when enrolled: "Found it, [name]." → pulled from `speaker_profile["user_name"]`.
+- Timestamps humanised: "2 days ago", "last Tuesday", "an hour ago" — not ISO strings.
+- No source file paths spoken aloud (irrelevant in voice context).
+
+---
+
+### 8.5 macOS Menu Bar
+
+**New file:** `daemon/menu_bar.py`
+
+Status icon in the macOS menu bar using `rumps` (MIT):
+
+```
+[🎤 DevMemory]
+  ├── Listening...          ← dynamic status label
+  ├── ─────────────
+  ├── Recent memories
+  │    ├── lancedb hybrid search uses compute_score()...
+  │    ├── Add deterministic pre-routing to QueryPlanner
+  │    └── core/memory_store.py (lines 236–316)...
+  ├── ─────────────
+  ├── Mute / Unmute
+  ├── Stats  (1,847 memories · 12 types)
+  └── Quit
+```
+
+States: 🎤 idle · 🟢 listening (post-wake) · 🔵 processing · 💬 speaking · 🔇 muted
+
+**New dep:** `rumps>=0.4` (macOS only). `pystray` listed as fallback in ROADMAP for Linux/Windows but not implemented in 8.5.
+
+**Modified:** `daemon/scheduler.py` (start menu bar thread in `--jarvis` mode)
+
+**Verify:**
+```bash
+devmemory daemon start --jarvis   # icon appears in menu bar
+# say "hey devmem, what did I work on yesterday?"
+# icon cycles 🎤 → 🟢 → 🔵 → 💬
+```
+
+---
+
+### 8.6 Multi-turn Conversation
+
+**New file:** `daemon/conversation.py`
+
+`ConversationBuffer` — ring buffer of last 5 `(query, response_summary)` pairs:
+
+- Prepended to RAGEngine context: "Previous: [Q] → [A]. Now: [current query]"
+- Enables natural follow-ups: "tell me more", "what about the other results?", "who wrote that?"
+- Voice commands to manage: "start over" / "clear" → `buffer.clear()`; "stop" / "never mind" → abort current op.
+- Not persisted to disk — in-memory only (resets on daemon restart).
+
+---
+
+### 8.7 Proactive Context Surfacing *(optional, off by default)*
+
+**Modified:** `daemon/watcher.py`
+
+When an indexed file is opened/modified:
+- Query store for `file_content` memories with `source = <path>`.
+- If top result importance > 0.7 and was last accessed > 7 days ago: speak a brief hint.
+- Anti-spam: max 1 proactive hint per 5 minutes globally.
+- Disabled by default: `devmemory config set proactive false`.
+- Enable: `devmemory config set proactive true`.
+
+Example: you open `core/memory_store.py` → "Heads up — you last touched this 4 days ago. There's a note about the hybrid search scoring weights."
+
+---
+
+### 8.8 Full Voice Command Coverage
+
+All CLI operations available via voice, no terminal needed:
+
+| Voice command | Action |
+|---|---|
+| "hey devmem, remember [text]" | `remember_memory(summary=text)`, replies "Got it." |
+| "hey devmem, forget that" | Deletes the last-remembered memory |
+| "hey devmem, mute / unmute" | Toggles TTS responses |
+| "hey devmem, how many memories?" | Speaks stats: "1,847 memories across 12 types." |
+| "hey devmem, what did I work on [time]?" | Recall intent → timeline |
+| "hey devmem, search for [X]" | Explicit search intent |
+| "hey devmem, stop" | Aborts current operation |
+| "hey devmem, go to sleep" | Disables wake word until "wake up" or restart |
+
+---
+
+### Phase 8 dependency summary
+
+```toml
+[jarvis]          # uv pip install 'devmemoryindex[jarvis]'
+openwakeword>=0.6
+webrtcvad
+rumps>=0.4
+# pulls in [voice]: openai-whisper, sounddevice, scipy, pyannote.audio
+# pulls in [speak]: edge-tts
+```
+
+| Phase | New files | Modified files | New dep |
+|---|---|---|---|
+| 8.1 | `daemon/wake_word.py`, `data/hey_devmem.tflite` | `daemon/scheduler.py`, `pyproject.toml` | `openwakeword` |
+| 8.2 | — | `daemon/wake_word.py`, `core/speaker_profile.py` | — (uses pyannote) |
+| 8.3 | `daemon/voice_pipeline.py`, `daemon/response_formatter.py` | `cli/commands/daemon_cmd.py` | `webrtcvad` |
+| 8.4 | `daemon/response_formatter.py` | — | — |
+| 8.5 | `daemon/menu_bar.py` | `daemon/scheduler.py` | `rumps` |
+| 8.6 | `daemon/conversation.py` | `daemon/voice_pipeline.py` | — |
+| 8.7 | — | `daemon/watcher.py`, `core/config.py` | — |
+| 8.8 | — | `daemon/voice_pipeline.py` | — |
+
+**Recommended implementation order: 8.1 → 8.2 → 8.3 → 8.4 → 8.5 → 8.6 → 8.7 → 8.8**
+
+8.1 and 8.2 are the core identity loop. Everything after is progressive enhancement.
 
 ---
 
