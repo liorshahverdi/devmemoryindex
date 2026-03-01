@@ -84,7 +84,8 @@
 | `pyproject.toml` | **Done** | `[project.scripts]` registered, hatchling build, dev deps + `[voice]` optional extras configured. |
 | Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/`, `scripts/` directories |
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
-| `connectors/filesystem_connector.py` | **Done** | Indexes code files from configured scan dirs. Language-aware importance: Python/TS/Go=0.7, others=0.5. Skips binaries, hidden dirs, `.gitignore` patterns. `devmemory config add-fs <dir>` to configure. |
+| `connectors/filesystem_connector.py` | **Done** | Indexes code files from configured scan dirs. Language-aware importance: Python/TS/Go=0.7, others=0.5. Skips binaries, hidden dirs, `.gitignore` patterns. `devmemory config add-fs <dir>` to configure. **Stale chunk eviction:** on each re-index run, chunks stored for the file that no longer match current content are deleted automatically. Eliminates ghost chunks from old code versions. |
+| `core/memory_store.py` — `get_ids_by_source()` | **Done** | `get_ids_by_source(source, type_filter) -> set[str]` — returns IDs of all memories stored for a given source path, optionally filtered by type. Used by FilesystemConnector for stale chunk eviction. |
 | `connectors/copilot_connector.py` | **Done** | Indexes GitHub Copilot chat logs from VSCode `workspaceStorage`. Extracts assistant responses ≥ 100 chars. Importance 0.7. |
 | `connectors/browser_connector.py` | **Done** | Indexes browser bookmarks from Chrome/Firefox/Safari. Extracts title + URL, stores as `browser_bookmark`. Importance 0.6. |
 | `connectors/meeting_connector.py` | **Done** | Indexes meeting transcripts from configured dirs. Chunks by speaker turn. Speaker identification via cosine profile. importance=0.75 for self turns. |
@@ -113,18 +114,17 @@
 - `api/auth.py` — optional API key auth done ✅
 
 **Test coverage summary (as of latest commit):**
-- Core: 170 passing, 1 xfailed — memory_store, ranking, hybrid_search (+ speaker_filter), context_engine, context_cache, schema, privacy, config, token_budget, intent_classifier, hooks
+- Core: 179 passing, 1 xfailed — memory_store (+ get_ids_by_source), ranking, hybrid_search (+ speaker_filter), context_engine, context_cache, schema, privacy, config, token_budget, intent_classifier, hooks
 - Daemon jobs: 12 passing (dedup, decay, prune)
-- Connectors: 37 passing (filesystem + markdown helpers + ingest integration)
+- Connectors: 41 passing (filesystem + stale eviction + markdown helpers + ingest integration)
 - API auth: 10 passing
-- Total: ~230 tests
+- Total: ~242 tests
 
 **What's next:**
-1. **Stale `file_content` chunk eviction** — `FilesystemConnector._index_file()` should delete old chunks for a file when content changes. Currently stale chunks accumulate for months. (Immediate, self-contained fix.)
-2. **Phase 8 — Jarvis Mode** — Always-on "hey devmem" wake word, speaker gate ("Do I know you?"), VAD-gated query recording, intent routing, punchy TTS responses, macOS menu bar. See Phase 8 spec below.
+1. **Phase 8 — Jarvis Mode** — Always-on "hey devmem" wake word, speaker gate ("Do I know you?"), VAD-gated query recording, intent routing, punchy TTS responses, macOS menu bar. See Phase 8 spec below. Start with 8.1 (wake word).
+2. **`--speaker` flag on `devmemory search`** — 10-line CLI addition to expose existing `hybrid_search(speaker_filter=...)` parameter. Good warm-up before Phase 8.
 3. **Phase 7.5** — VSCode Extension (deferred — see spec below)
 4. **Phase 7.6** — Web UI (deferred — see spec below)
-5. **`--speaker` flag on `devmemory search`** — tiny CLI addition to expose existing `hybrid_search(speaker_filter=...)` parameter
 
 ---
 
