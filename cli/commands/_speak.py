@@ -36,6 +36,9 @@ class StreamingSpeaker:
             display(chunk)
             speaker.feed(chunk)
         speaker.finish()   # flush remainder, block until audio queue drains
+
+    Call cancel() from any thread to stop playback immediately (kills the
+    current audio subprocess and drains the sentence queue).
     """
 
     def __init__(self, voice: str | None = None):
@@ -43,6 +46,9 @@ class StreamingSpeaker:
         self._voice = voice or ("en-GB-RyanNeural" if self._use_edge else "Daniel")
         self._buffer = ""
         self._q: queue.Queue[str | None] = queue.Queue()
+        self._cancelled = threading.Event()
+        self._proc: "subprocess.Popen | None" = None  # current audio subprocess
+        self._proc_lock = threading.Lock()
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
 
@@ -50,6 +56,8 @@ class StreamingSpeaker:
 
     def feed(self, chunk: str) -> None:
         """Add a text chunk; speak any newly completed sentences."""
+        if self._cancelled.is_set():
+            return
         self._buffer += chunk
         sentences, self._buffer = _split_sentences(self._buffer)
         for s in sentences:
@@ -58,28 +66,47 @@ class StreamingSpeaker:
 
     def finish(self) -> None:
         """Flush remaining buffer and block until all audio has played."""
-        if self._buffer.strip():
+        if not self._cancelled.is_set() and self._buffer.strip():
             self._q.put(self._buffer.strip())
         self._buffer = ""
-        self._q.put(None)   # sentinel
+        if not self._cancelled.is_set():
+            self._q.put(None)   # sentinel
         self._thread.join()
+
+    def cancel(self) -> None:
+        """Stop playback immediately — safe to call from any thread."""
+        self._cancelled.set()
+        # Kill current audio subprocess
+        with self._proc_lock:
+            if self._proc and self._proc.poll() is None:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+        # Drain pending sentences so the worker can exit
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
+        self._q.put(None)   # wake the worker so it sees the sentinel
 
     # ------------------------------------------------------------------
 
     def _worker(self) -> None:
         while True:
             text = self._q.get()
-            if text is None:
+            if text is None or self._cancelled.is_set():
                 break
             try:
                 if self._use_edge:
-                    _speak_edge(text, self._voice)
+                    _speak_edge(text, self._voice, self)
                 else:
-                    _speak_macos(text, self._voice)
+                    _speak_macos(text, self._voice, self)
             except Exception:
                 # edge-tts failure (e.g. offline) → fall back to say
                 try:
-                    _speak_macos(text, "Daniel")
+                    _speak_macos(text, "Daniel", self)
                 except Exception:
                     pass
 
@@ -96,7 +123,7 @@ def _split_sentences(text: str) -> tuple[list[str], str]:
     return parts[:-1], parts[-1]
 
 
-def _speak_edge(text: str, voice: str) -> None:
+def _speak_edge(text: str, voice: str, speaker: "StreamingSpeaker | None" = None) -> None:
     """Speak via edge-tts neural voice, play with afplay (macOS)."""
     import asyncio
     import os
@@ -109,7 +136,12 @@ def _speak_edge(text: str, voice: str) -> None:
             path = f.name
         try:
             await communicate.save(path)
-            subprocess.run(["afplay", path], capture_output=True)
+            proc = subprocess.Popen(["afplay", path],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if speaker is not None:
+                with speaker._proc_lock:
+                    speaker._proc = proc
+            proc.wait()
         finally:
             try:
                 os.unlink(path)
@@ -119,6 +151,11 @@ def _speak_edge(text: str, voice: str) -> None:
     asyncio.run(_run())
 
 
-def _speak_macos(text: str, voice: str) -> None:
+def _speak_macos(text: str, voice: str, speaker: "StreamingSpeaker | None" = None) -> None:
     """Speak via macOS say command."""
-    subprocess.run(["say", "-v", voice, text], capture_output=True)
+    proc = subprocess.Popen(["say", "-v", voice, text],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if speaker is not None:
+        with speaker._proc_lock:
+            speaker._proc = proc
+    proc.wait()

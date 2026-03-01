@@ -7,11 +7,11 @@ A persistent developer memory store that captures, indexes, and semantically sea
 DevMemoryIndex turns your day-to-day development activity into a searchable, vector-indexed knowledge base. Memories are stored with rich metadata and retrieved via hybrid search (semantic similarity + keyword matching). It runs as a local daemon, exposes a REST API for cross-machine access, and integrates directly into Claude Code via MCP.
 
 ```
-core/         Storage engine, embeddings, hybrid search, config
+core/         Storage engine, embeddings, hybrid search, config, edge graph
 api/          FastAPI REST server with optional API key auth
-cli/          Typer CLI — 18 commands covering all features
+cli/          Typer CLI — 21 commands covering all features
 connectors/   Git, terminal, filesystem, markdown, Copilot, browser, meetings
-daemon/       Background scheduler + markdown file watcher
+daemon/       Background scheduler, file watcher, edge inference jobs
 memory_db/    LanceDB on-disk database (auto-created)
 ```
 
@@ -132,6 +132,39 @@ devmemory prune --dry-run
 # Remove memories below importance threshold
 devmemory prune --min-importance 0.3
 ```
+
+### `health` — Store quality dashboard
+
+```bash
+devmemory health
+devmemory health --json
+```
+
+Prints type breakdown, importance histogram, avg access count, stale memories (never accessed + >60 days old), and low click-through-rate memories. Use this before a consolidation or pruning pass.
+
+### `audit` — Review deprecated memories
+
+```bash
+# List all forgotten memories with their deprecation reasons
+devmemory audit
+
+# Permanently delete all deprecated memories after review
+devmemory audit --purge
+```
+
+Memories marked with `forget_memory()` or `devmemory forget` are excluded from search but preserved here for review.
+
+### `consolidate` — Merge redundant memories
+
+```bash
+# Merge two or more memories into one canonical entry
+devmemory consolidate <id1> <id2> [<id3> ...]
+
+# Provide a custom summary for the merged memory
+devmemory consolidate <id1> <id2> --summary "canonical solution for X"
+```
+
+Combines the raw_text of all inputs, stores a new memory at max(importance), and permanently deletes the originals.
 
 ---
 
@@ -320,7 +353,29 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-Available MCP tools: `search_memories`, `build_context`, `remember_memory`, `get_memory`.
+**19 MCP tools available:**
+
+| Tool | Purpose |
+|---|---|
+| `search_memories` | Hybrid search. Now returns `score_breakdown` on every result. |
+| `build_context` | Formatted context block. Returns `{context_text, retrieval_trace, memory_count, token_estimate}`. |
+| `get_session_context` | Call at session start — combines task + git state for bootstrapped context. |
+| `remember_memory` | Persist a solution or decision. |
+| `remember_failure` | Record a failed approach so it's never repeated. |
+| `get_memory` | Fetch a single memory by ID (resolves `related[]` links). |
+| `update_memory` | Correct an existing memory in-place. |
+| `reinforce_memory` | Boost importance after successfully applying a solution. |
+| `get_codebase_map` | KMeans cluster of `file_content` memories → subsystem overview. |
+| `plan_task` | LLM-generated implementation plan grounded in memory + git state. |
+| `explain_score` | Why did this memory rank here? Returns per-component breakdown + explanation. |
+| `why_not_included` | Why was this memory absent from `build_context`? Diagnoses dedup / budget / no-match. |
+| `forget_memory` | Deprecate bad knowledge. Excluded from search, preserved for audit. |
+| `get_store_health` | Store quality report: type breakdown, stale count, low-CTR memories. |
+| `consolidate_memories` | Merge N redundant memories into one canonical entry. |
+| `search_batch` | Parallel search across multiple queries, deduplicated merged results. |
+| `link_memories` | Create a typed causal edge between two memories. |
+| `get_memory_graph` | Subgraph up to N hops from a root memory. |
+| `trace_causality` | Follow `caused_by`/`fixed_by` edges to root cause. |
 
 ---
 

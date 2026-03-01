@@ -96,20 +96,32 @@ class TestRememberMemory:
 
 class TestBuildContext:
 
-    def test_returns_string(self, store):
+    def test_returns_dict_with_context_text(self, store):
         _seed(store, "Redis connection fix")
         result = build_context("redis fix")
-        assert isinstance(result, str)
+        assert isinstance(result, dict)
+        assert "context_text" in result
+        assert isinstance(result["context_text"], str)
+
+    def test_returns_retrieval_trace(self, store):
+        _seed(store, "Redis connection fix")
+        result = build_context("redis fix")
+        assert "retrieval_trace" in result
+        trace = result["retrieval_trace"]
+        assert "included" in trace
+        assert "dropped_dedup" in trace
+        assert "dropped_budget" in trace
 
     def test_claude_format_has_context_tags(self, store):
         _seed(store, "LanceDB timestamp fix")
         result = build_context("lancedb", format="claude")
-        assert "<context>" in result
-        assert "</context>" in result
+        assert "<context>" in result["context_text"]
+        assert "</context>" in result["context_text"]
 
-    def test_empty_store_returns_string(self, store):
+    def test_empty_store_returns_dict(self, store):
         result = build_context("anything")
-        assert isinstance(result, str)
+        assert isinstance(result, dict)
+        assert "context_text" in result
 
 
 # ── get_memory ────────────────────────────────────────────────────────────────

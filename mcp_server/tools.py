@@ -16,6 +16,15 @@ Tool summary:
   reinforce_memory     — explicitly boost importance after successfully applying a solution
   get_codebase_map     — cluster file_content memories to reveal subsystem structure
   plan_task            — generate a grounded implementation plan from memory + git context
+  explain_score        — explain why a specific memory ranked where it did (T1-A)
+  why_not_included     — explain why a memory was excluded from build_context results (T1-A)
+  forget_memory        — deprecate a memory with a reason; excludes from search but preserves for audit (T1-D)
+  get_store_health     — return store quality metrics: type breakdown, stale count, CTR (T1-E)
+  consolidate_memories — merge multiple memories into one canonical memory (T1-C)
+  search_batch         — run multiple searches in parallel and return deduplicated results (T1-F)
+  link_memories        — create a typed edge between two memories (T2-A)
+  get_memory_graph     — return the subgraph of memories connected to a given memory (T2-A)
+  trace_causality      — follow causal chain from a memory to its root cause (T2-A)
 """
 
 import hashlib
@@ -80,6 +89,7 @@ def search_memories(
             "related": r.get("related", []),
             "times_retrieved": r.get("times_retrieved", 0) or 0,
             "times_accessed": r.get("times_accessed", 0) or 0,
+            "score_breakdown": r.get("score_breakdown"),  # T1-A: explainability
         }
         for r in results
     ]
@@ -92,7 +102,7 @@ def build_context(
     format: str = "claude",
     intent: str | None = None,
     files: list[str] | None = None,
-) -> str:
+) -> dict:
     """Build AI-ready context from developer memory for the given task or query.
 
     Runs hybrid search, deduplicates results, packs them within a token budget,
@@ -117,13 +127,23 @@ def build_context(
                     parent dirs, and import keywords to enrich the query automatically.
 
     Returns:
-        Formatted string ready to prepend to a prompt or display directly.
+        dict with keys:
+          - "context_text": Formatted string ready to prepend to a prompt or display directly.
+          - "retrieval_trace": {included, dropped_dedup, dropped_budget, intent_detected,
+                                total_candidates} — shows which memories were included vs dropped.
+          - "memory_count": number of memories included.
+          - "token_estimate": estimated token count.
     """
     enriched = f"{query} {_file_signals(files)}".strip() if files else query
     store = get_store()
     engine = ContextEngine(store)
     result = engine.build(query=enriched, repo=repo, max_tokens=max_tokens, format=format, intent=intent)
-    return result["context_text"]
+    return {
+        "context_text": result["context_text"],
+        "retrieval_trace": result.get("retrieval_trace", {}),
+        "memory_count": result.get("memory_count", 0),
+        "token_estimate": result.get("token_estimate", 0),
+    }
 
 
 def _auto_summarize(raw_text: str) -> str:
@@ -175,8 +195,18 @@ def remember_memory(
     store = get_store()
     raw = raw_text or summary
 
-    # Quality check: auto-generate summary from raw_text if summary is blank/missing
-    effective_summary = summary.strip() if summary.strip() else _auto_summarize(raw)
+    # Quality check: auto-generate summary from raw_text if summary is blank/missing.
+    # T1-G: If [connectors] auto_summarize = true, try LLM summarization first.
+    if summary.strip():
+        effective_summary = summary.strip()
+    else:
+        from core.config import get_auto_summarize
+        if get_auto_summarize():
+            from core.llm_backend import llm_summarize
+            llm_result = llm_summarize(raw)
+            effective_summary = llm_result or _auto_summarize(raw)
+        else:
+            effective_summary = _auto_summarize(raw)
 
     mem_id = hashlib.sha256(raw[:500].encode()).hexdigest()
     if store.exists(mem_id):
@@ -442,6 +472,395 @@ def plan_task(
         return {"plan": "", "memory_count": memory_count, "error": str(e)}
 
     return {"plan": plan_text, "memory_count": memory_count}
+
+
+# ── T1-A: Score Explainability ────────────────────────────────────────────────
+
+def explain_score(memory_id: str, query: str) -> dict:
+    """Explain why a specific memory ranked where it did for a given query.
+
+    Returns the individual score components (semantic similarity, importance,
+    recency) and a human-readable explanation of how they combined into the
+    final score. Use this to understand why a memory surfaced or to diagnose
+    ranking surprises.
+
+    Args:
+        memory_id: The exact ID of the memory to explain (from search results).
+        query:     The search query used when this memory ranked.
+
+    Returns:
+        dict with:
+          - "id": memory ID
+          - "summary": memory summary (for context)
+          - "score_breakdown": {semantic, importance, recency, final}
+          - "explanation": human-readable explanation string
+          - "query": the query used for scoring
+    """
+    from core.ranking import compute_score_breakdown
+    store = get_store()
+    record = store.get_by_id(memory_id, reinforce=False)
+    if record is None:
+        return {"error": f"Memory '{memory_id}' not found"}
+
+    vector = embed(query)
+    # Run search to get the _distance for this specific memory relative to the query
+    candidates = store.hybrid_search(query, vector, k=50)
+    match = next((c for c in candidates if c["id"] == memory_id), None)
+
+    if match is None:
+        # Memory wasn't in top-50 — score it with maximum distance
+        record["_distance"] = 1.0
+        breakdown = compute_score_breakdown(record)
+        explanation = (
+            f"This memory did not appear in the top-50 results for '{query}'. "
+            f"Semantic similarity: {breakdown['semantic']:.2f} (low — memory content "
+            f"is distant from the query vector). Importance: {breakdown['importance']:.2f}. "
+            f"Recency: {breakdown['recency']:.2f}."
+        )
+    else:
+        breakdown = match.get("score_breakdown") or compute_score_breakdown(match)
+        sem = breakdown["semantic"]
+        imp = breakdown["importance"]
+        rec = breakdown["recency"]
+        final = breakdown["final"]
+        explanation = (
+            f"Final score {final:.3f} = semantic({sem:.2f}) × 0.75 "
+            f"+ importance({imp:.2f}) × 0.15 "
+            f"+ recency({rec:.2f}) × 0.10. "
+        )
+        if sem >= 0.7:
+            explanation += "High semantic similarity — content closely matches query. "
+        elif sem >= 0.4:
+            explanation += "Moderate semantic match. "
+        else:
+            explanation += "Low semantic similarity — may have ranked via keyword match. "
+        if imp >= 0.8:
+            explanation += f"High importance ({imp:.2f}) boosted rank. "
+        if rec < 0.2:
+            explanation += "Recency contribution is low — memory is older than 30 days."
+
+    return {
+        "id": memory_id,
+        "summary": record.get("summary", ""),
+        "query": query,
+        "score_breakdown": breakdown,
+        "explanation": explanation.strip(),
+    }
+
+
+def why_not_included(memory_id: str, query: str, max_tokens: int = 4000) -> dict:
+    """Explain why a memory was excluded from a build_context result.
+
+    Diagnoses whether the memory was:
+      - Not in any search results (too dissimilar to the query)
+      - In results but dropped by deduplication (near-identical to a higher-ranked memory)
+      - In results but dropped by the token budget
+
+    Args:
+        memory_id:  The memory ID to investigate.
+        query:      The query used with build_context.
+        max_tokens: Token budget that was used (default 4000).
+
+    Returns:
+        dict with:
+          - "reason": one of "not_in_results" | "dropped_dedup" | "dropped_budget" | "included"
+          - "explanation": human-readable explanation
+          - "score_breakdown": score if it appeared in results
+    """
+    store = get_store()
+    engine = ContextEngine(store)
+    result = engine.build(query=query, max_tokens=max_tokens, format="raw")
+    trace = result.get("retrieval_trace", {})
+
+    if memory_id in trace.get("included", []):
+        record = store.get_by_id(memory_id, reinforce=False)
+        score = record.get("score_breakdown") if record else None
+        return {
+            "reason": "included",
+            "explanation": "This memory WAS included in the context results.",
+            "score_breakdown": score,
+        }
+
+    if memory_id in trace.get("dropped_dedup", []):
+        return {
+            "reason": "dropped_dedup",
+            "explanation": (
+                "This memory was retrieved but dropped during deduplication because "
+                "another memory with a near-identical summary prefix was already included. "
+                "Consider updating the summary to be more unique."
+            ),
+            "score_breakdown": None,
+        }
+
+    if memory_id in trace.get("dropped_budget", []):
+        return {
+            "reason": "dropped_budget",
+            "explanation": (
+                f"This memory was retrieved and passed deduplication but was excluded "
+                f"because the token budget ({max_tokens} tokens) was exhausted by "
+                f"higher-ranked memories. Try increasing max_tokens or narrowing the query."
+            ),
+            "score_breakdown": None,
+        }
+
+    # Not in any results
+    vector = embed(query)
+    candidates = store.hybrid_search(query, vector, k=50)
+    match = next((c for c in candidates if c["id"] == memory_id), None)
+    if match:
+        breakdown = match.get("score_breakdown")
+        return {
+            "reason": "low_rank",
+            "explanation": (
+                f"This memory appeared in search results but ranked below the top-50 "
+                f"selected for context building. Final score: {breakdown['final']:.3f}."
+            ),
+            "score_breakdown": breakdown,
+        }
+
+    return {
+        "reason": "not_in_results",
+        "explanation": (
+            "This memory did not appear in the top-50 hybrid search results for this query. "
+            "It may have low semantic similarity to the query, or the query terms don't "
+            "match the memory's summary or raw_text. Try a more specific query or use "
+            "search_memories() with different terms."
+        ),
+        "score_breakdown": None,
+    }
+
+
+# ── T1-D: Forget Memory with Audit Trail ─────────────────────────────────────
+
+def forget_memory(memory_id: str, reason: str = "") -> dict:
+    """Deprecate a memory — excludes it from all future searches but preserves it for audit.
+
+    Use this instead of permanently deleting when you want to flag a memory as
+    outdated, incorrect, or superseded without losing the record that it existed.
+    Deprecated memories appear in `devmemory audit` and can be permanently deleted
+    after human review.
+
+    Args:
+        memory_id: The exact memory ID to deprecate (from search_memories results).
+        reason:    Human-readable explanation for why the memory is being deprecated.
+                   E.g. "superseded by new lancedb schema", "approach was incorrect".
+
+    Returns:
+        {"status": "ok", "id": "...", "reason": "..."} on success.
+        {"status": "not_found"} if memory_id does not exist.
+    """
+    store = get_store()
+    ok = store.forget(memory_id, reason=reason)
+    if not ok:
+        return {"status": "not_found"}
+    return {"status": "ok", "id": memory_id, "reason": reason}
+
+
+# ── T1-E: Store Health ────────────────────────────────────────────────────────
+
+def get_store_health() -> dict:
+    """Return a quality and health report on the memory store.
+
+    Surfaces metrics that help identify stale, redundant, or low-signal memories
+    so agents can decide when to consolidate, forget, or prune the store.
+
+    Returns:
+        dict with:
+          - "total": total memory count (active + deprecated)
+          - "active": count of active (non-deprecated) memories
+          - "deprecated": count of deprecated memories
+          - "type_breakdown": {memory_type: count}
+          - "importance_histogram": bucketed importance distribution
+          - "avg_times_accessed": average explicit access count across active memories
+          - "stale_count": active memories never accessed and older than 60 days
+          - "low_ctr_count": retrieved 5+ times but accessed <10% of the time
+    """
+    store = get_store()
+    return store.get_store_health()
+
+
+# ── T1-C: Memory Consolidation ────────────────────────────────────────────────
+
+def consolidate_memories(ids: list[str], summary: str | None = None) -> dict:
+    """Merge multiple redundant memories into one canonical memory.
+
+    Fetches all memories by the given IDs, combines their raw_text, and stores
+    a new memory at the maximum importance of the originals. The original memories
+    are permanently deleted. Use this to clean up 5+ variations of the same solution.
+
+    Args:
+        ids:     List of memory IDs to consolidate (minimum 2).
+        summary: Optional new summary for the consolidated memory. If not provided,
+                 uses the summary of the highest-importance memory in the set.
+
+    Returns:
+        {"status": "ok", "new_id": "...", "deleted": N} on success.
+        {"status": "error", "message": "..."} if fewer than 2 valid IDs provided.
+    """
+    store = get_store()
+    return store.consolidate(ids, summary=summary)
+
+
+# ── T1-F: Batch Search ────────────────────────────────────────────────────────
+
+def search_batch(queries: list[str], k: int = 5) -> dict:
+    """Run multiple searches in parallel and return a deduplicated, unified result set.
+
+    Useful when you want to search for several related topics at once without
+    making separate search_memories() calls. Results are merged and deduplicated
+    by ID, then re-ranked by final score.
+
+    Args:
+        queries: List of search queries (1–10 queries).
+        k:       Max results per query before dedup (default 5).
+
+    Returns:
+        dict with:
+          - "results": deduplicated list of memory results, sorted by score descending.
+            Each result includes which query/queries retrieved it ("source_queries").
+          - "total_unique": count of unique memories across all queries.
+          - "query_count": number of queries run.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not queries:
+        return {"results": [], "total_unique": 0, "query_count": 0}
+
+    store = get_store()
+
+    def _run_query(q: str) -> tuple[str, list]:
+        vector = embed(q)
+        results = store.hybrid_search(q, vector, k=k)
+        return q, results
+
+    seen: dict[str, dict] = {}
+    query_attribution: dict[str, list[str]] = {}
+
+    with ThreadPoolExecutor(max_workers=min(len(queries), 5)) as pool:
+        futures = {pool.submit(_run_query, q): q for q in queries[:10]}
+        for future in as_completed(futures):
+            try:
+                q, results = future.result()
+                for r in results:
+                    mem_id = r["id"]
+                    if mem_id not in seen:
+                        seen[mem_id] = r
+                    query_attribution.setdefault(mem_id, []).append(q)
+            except Exception:
+                pass
+
+    merged = []
+    for mem_id, r in seen.items():
+        merged.append({
+            "id": r["id"],
+            "summary": r["summary"],
+            "type": r["type"],
+            "repo": r.get("repo"),
+            "importance": r.get("importance"),
+            "tags": r.get("tags", []),
+            "score_breakdown": r.get("score_breakdown"),
+            "times_retrieved": r.get("times_retrieved", 0) or 0,
+            "times_accessed": r.get("times_accessed", 0) or 0,
+            "source_queries": query_attribution.get(mem_id, []),
+        })
+
+    merged.sort(key=lambda x: (x.get("score_breakdown") or {}).get("final", 0), reverse=True)
+
+    return {
+        "results": merged,
+        "total_unique": len(merged),
+        "query_count": len(queries),
+    }
+
+
+# ── T2-A: Memory Entanglement (Typed Edge Graph) ──────────────────────────────
+
+def link_memories(from_id: str, to_id: str, edge_type: str, confidence: float = 1.0) -> dict:
+    """Create a typed causal/semantic edge between two memories.
+
+    Edges encode the relationship between memories so you can trace causal chains,
+    find what fixed a bug, or see what a solution references.
+
+    Edge types:
+      "caused_by"   — from_id was caused by to_id (e.g. a failure caused by a bad pattern)
+      "fixed_by"    — from_id was fixed by to_id (e.g. failure_note fixed by a commit)
+      "references"  — from_id references to_id for context
+      "supersedes"  — from_id supersedes/replaces to_id
+      "contradicts" — from_id contradicts to_id
+      "related_to"  — loose semantic relationship
+
+    Args:
+        from_id:    Source memory ID.
+        to_id:      Target memory ID.
+        edge_type:  One of the edge types listed above.
+        confidence: Confidence of the edge (0.0–1.0). Default 1.0 for agent-created edges.
+
+    Returns:
+        {"status": "ok", "from": from_id, "to": to_id, "type": edge_type}
+        {"status": "duplicate"} if this exact edge already exists.
+        {"status": "error", "message": "..."} for invalid edge types.
+    """
+    from core.edge_store import VALID_EDGE_TYPES
+    from core.edge_provider import get_edges
+    if edge_type not in VALID_EDGE_TYPES:
+        return {"status": "error", "message": f"Invalid edge_type '{edge_type}'. Valid: {sorted(VALID_EDGE_TYPES)}"}
+    edges = get_edges()
+    added = edges.add_edge(from_id, to_id, edge_type, confidence=confidence, source="agent")
+    if not added:
+        return {"status": "duplicate", "from": from_id, "to": to_id, "type": edge_type}
+    return {"status": "ok", "from": from_id, "to": to_id, "type": edge_type, "confidence": confidence}
+
+
+def get_memory_graph(memory_id: str, depth: int = 2) -> dict:
+    """Return the subgraph of memories connected to a given memory.
+
+    Traverses typed edges up to `depth` hops from the root memory, returning
+    all reachable memory IDs and the edges connecting them. Use this to
+    understand the full context around a decision, bug, or solution.
+
+    Args:
+        memory_id: Root memory ID to start the graph traversal from.
+        depth:     Maximum hops to traverse (default 2, max 5).
+
+    Returns:
+        dict with:
+          - "root": root memory ID
+          - "nodes": all reachable memory IDs (including root)
+          - "edges": list of {from_id, to_id, edge_type, confidence, source, created_at}
+          - "node_count": number of nodes
+          - "edge_count": number of edges
+    """
+    from core.edge_provider import get_edges
+    edges = get_edges()
+    depth = min(int(depth), 5)
+    graph = edges.get_graph(memory_id, depth=depth)
+    return {**graph, "node_count": len(graph["nodes"]), "edge_count": len(graph["edges"])}
+
+
+def trace_causality(memory_id: str) -> dict:
+    """Follow the causal chain from a memory back to its root cause.
+
+    Traverses "caused_by" and "fixed_by" edges from the given memory to the
+    deepest ancestor in the causal chain. Returns an ordered sequence of
+    memory IDs showing how a problem propagated or was resolved.
+
+    Args:
+        memory_id: Starting memory ID (typically a failure_note or bug report).
+
+    Returns:
+        dict with:
+          - "chain": [{memory_id, step, via_edge}, ...] ordered from root to leaf
+          - "length": number of steps in the chain
+          - "root_cause_id": the last memory_id in the chain
+    """
+    from core.edge_provider import get_edges
+    edges = get_edges()
+    chain = edges.trace_causality(memory_id)
+    return {
+        "chain": chain,
+        "length": len(chain),
+        "root_cause_id": chain[-1]["memory_id"] if chain else memory_id,
+    }
 
 
 def remember_failure(

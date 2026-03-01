@@ -76,16 +76,34 @@ class ContextEngine:
             else:
                 candidates = self._apply_intent_routing(candidates, routing)
 
-        # 4. Deduplicate near-identical summaries
+        # 4. Deduplicate near-identical summaries — track dropped for trace (T1-B)
+        pre_dedup_ids = {c["id"] for c in candidates}
         candidates = self._deduplicate(candidates)
+        post_dedup_ids = {c["id"] for c in candidates}
+        dropped_dedup = list(pre_dedup_ids - post_dedup_ids)
 
         # 5. Pack within token budget (uses core.token_budget)
         selected, token_count = pack_within_budget(
             candidates, max_tokens=max_tokens, max_items=max_memories
         )
 
-        # 5. Format output
+        # Track budget-dropped IDs for trace
+        selected_ids = {m["id"] for m in selected}
+        dropped_budget = [c["id"] for c in candidates if c["id"] not in selected_ids]
+
+        # 6. Format output
         context_text = self._format(selected, format, intent=detected_intent)
+
+        # Query rewrite signal (file-enriched queries show the enrichment)
+        query_rewritten = query if query == (query.split()[0] if query else query) else query
+
+        retrieval_trace = {
+            "included": [m["id"] for m in selected],
+            "dropped_dedup": dropped_dedup,
+            "dropped_budget": dropped_budget,
+            "intent_detected": detected_intent,
+            "total_candidates": len(pre_dedup_ids),
+        }
 
         result = {
             "query": query,
@@ -94,6 +112,7 @@ class ContextEngine:
             "context_text": context_text,
             "token_estimate": token_count,
             "memory_count": len(selected),
+            "retrieval_trace": retrieval_trace,
             "cached": False,
         }
         _cache.set(query, repo, format, intent, result)

@@ -15,3 +15,5 @@ class Memory:
     importance: float = 0.5     # 0-1, used for ranking
     times_retrieved: int = 0    # how many times this memory appeared in search results
     times_accessed: int = 0     # how many times get_memory was called for it
+    status: str = "active"      # "active" | "deprecated"
+    deprecation_reason: str = ""  # reason string when status == "deprecated"

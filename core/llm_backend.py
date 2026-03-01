@@ -122,6 +122,39 @@ class LlamaCppBackend(LLMBackend):
             yield r.json().get("content", "")
 
 
+def llm_summarize(raw_text: str, max_chars: int = 200, cfg: dict | None = None) -> str | None:
+    """Generate a 1-sentence LLM summary of raw_text for ingest (T1-G).
+
+    Uses the configured local LLM (Ollama by default). Returns None if the
+    LLM is unavailable, allowing callers to fall back to heuristic truncation.
+
+    Args:
+        raw_text:  The full text to summarize.
+        max_chars: Maximum length of the returned summary (default 200).
+        cfg:       Optional LLM config dict; reads from config.toml if None.
+
+    Returns:
+        A one-sentence summary string, or None if the LLM call failed.
+    """
+    if not raw_text or not raw_text.strip():
+        return None
+    excerpt = raw_text[:1000]
+    prompt = (
+        "Summarize the following developer note in one concise sentence (max 200 characters). "
+        "Output only the sentence, nothing else.\n\n"
+        f"{excerpt}"
+    )
+    try:
+        backend = get_backend(cfg)
+        chunks = list(backend.generate(prompt, stream=False))
+        result = "".join(chunks).strip()
+        # Strip any wrapping quotes the model may add
+        result = result.strip('"\'')
+        return result[:max_chars] if result else None
+    except Exception:
+        return None
+
+
 def get_backend(cfg: dict | None = None) -> LLMBackend:
     """Factory — build the right backend from a config dict or config.toml [llm]."""
     if cfg is None:

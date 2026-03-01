@@ -75,7 +75,11 @@ def _verify_speaker(audio_f32: "np.ndarray", sample_rate: int = 16000) -> bool:
 
         waveform = torch.from_numpy(audio_f32).unsqueeze(0)
         embedding = inference({"waveform": waveform, "sample_rate": sample_rate})
-        return is_self(embedding, profile, threshold=0.3)
+        from scipy.spatial.distance import cosine as _cosine
+        distance = float(_cosine(embedding, profile["embedding"] if isinstance(profile, dict) else profile))
+        import daemon.daemon_log as _dlog
+        _dlog.write(f"[speaker] cosine distance={distance:.4f}  threshold=0.85")
+        return distance < 0.85
     except ImportError:
         # pyannote not installed — warn but allow through
         console.print("[dim yellow]Speaker verification skipped (pyannote not installed).[/dim yellow]")

@@ -1,3 +1,4 @@
+import threading
 import time
 from datetime import date
 from rich.console import Console
@@ -51,14 +52,21 @@ def run_daemon(jarvis: bool = False):
     # Start filesystem watcher in background thread
     start_watcher()
 
-    # Start wake word listener if --jarvis mode is enabled
+    # Start wake word listener + voice pipeline if --jarvis mode is enabled
     if jarvis:
         try:
             from daemon.wake_word import start_wake_word_thread
+            from daemon.voice_pipeline import VoicePipeline
             start_wake_word_thread()
-            _log("Wake word listener started — say 'hey devmem' to activate")
+            _log("Wake word listener started — say 'hey jarvis' to activate")
+            threading.Thread(
+                target=VoicePipeline().run,
+                daemon=True,
+                name="devmemory-pipeline",
+            ).start()
+            _log("Voice pipeline active — say 'hey jarvis' to start")
         except Exception as exc:
-            _log(f"Wake word listener failed to start: {exc}", "WARN")
+            _log(f"Jarvis mode failed to start: {exc}", "WARN")
 
     last_run: dict[str, float] = {}  # connector name → last run timestamp
     last_prune_date = None

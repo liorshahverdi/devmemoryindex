@@ -37,6 +37,21 @@ from mcp_server.tools import (
     reinforce_memory,
     get_codebase_map,
     plan_task,
+    # T1-A: Score Explainability
+    explain_score,
+    why_not_included,
+    # T1-D: Forget with Audit Trail
+    forget_memory,
+    # T1-E: Store Health Dashboard
+    get_store_health,
+    # T1-C: Memory Consolidation
+    consolidate_memories,
+    # T1-F: Batch Search
+    search_batch,
+    # T2-A: Memory Entanglement
+    link_memories,
+    get_memory_graph,
+    trace_causality,
 )
 
 mcp = FastMCP(
@@ -57,6 +72,24 @@ mcp = FastMCP(
     Use get_codebase_map to get a structural overview of an unfamiliar or refactored repo.
     Use plan_task to generate a grounded implementation plan before writing code.
 
+    Score transparency:
+    Use explain_score(memory_id, query) to understand WHY a memory ranked where it did.
+    Use why_not_included(memory_id, query) to diagnose why a memory was excluded from context.
+    search_memories() now returns score_breakdown on every result — check it!
+
+    Memory lifecycle:
+    Use forget_memory(id, reason) to deprecate bad knowledge (preserves for audit, excluded from search).
+    Use consolidate_memories([id1, id2, ...]) to merge redundant memories into one canonical entry.
+    Use get_store_health() to see store quality metrics: type breakdown, stale count, low-CTR memories.
+
+    Memory graph (causal reasoning):
+    Use link_memories(from_id, to_id, edge_type) to create typed edges between memories.
+    Use get_memory_graph(memory_id, depth=2) to see all related memories up to N hops.
+    Use trace_causality(memory_id) to follow the causal chain to a root cause.
+
+    Batch search:
+    Use search_batch(queries=[...]) to run multiple searches at once and get deduplicated results.
+
     Search with specific technical terms for best results.
     Always call get_session_context or build_context before starting complex implementation tasks.
     Check times_accessed in search_memories results: high access count = proven solution.
@@ -73,6 +106,21 @@ mcp.tool()(update_memory)
 mcp.tool()(reinforce_memory)
 mcp.tool()(get_codebase_map)
 mcp.tool()(plan_task)
+# T1-A
+mcp.tool()(explain_score)
+mcp.tool()(why_not_included)
+# T1-D
+mcp.tool()(forget_memory)
+# T1-E
+mcp.tool()(get_store_health)
+# T1-C
+mcp.tool()(consolidate_memories)
+# T1-F
+mcp.tool()(search_batch)
+# T2-A
+mcp.tool()(link_memories)
+mcp.tool()(get_memory_graph)
+mcp.tool()(trace_causality)
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

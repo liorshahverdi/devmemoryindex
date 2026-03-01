@@ -17,6 +17,29 @@ def start(
     run_daemon(jarvis=jarvis)
 
 
+@app.command("stop")
+def stop():
+    """Stop a running foreground daemon (started with 'daemon start')."""
+    import os
+    import signal
+    import subprocess
+
+    result = subprocess.run(
+        ["pgrep", "-f", "devmemory daemon start"],
+        capture_output=True, text=True,
+    )
+    pids = [int(p) for p in result.stdout.split() if p.strip()]
+    if not pids:
+        console.print("[yellow]No running daemon found.[/yellow]")
+        raise typer.Exit(0)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    console.print(f"[green]Sent SIGTERM to PID(s):[/green] {', '.join(str(p) for p in pids)}")
+
+
 @app.command("install")
 def install():
     """Install as a macOS launchd service (auto-starts at login)."""

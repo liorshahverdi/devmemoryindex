@@ -68,12 +68,13 @@ class ClaudeConnector(Connector):
         return count
 
     def _index_session(self, path: Path) -> int:
-        count = 0
         try:
             lines = path.read_text(errors="ignore").splitlines()
         except Exception:
             return 0
 
+        # Build candidate list first so we can batch-check existence.
+        candidates = []
         for line in lines:
             line = line.strip()
             if not line:
@@ -94,10 +95,21 @@ class ClaudeConnector(Connector):
                 continue
 
             mem_id = hashlib.sha256(text[:500].encode()).hexdigest()
-            if self.store.exists(mem_id):
-                continue
+            candidates.append((mem_id, text, obj))
 
-            # Parse ISO timestamp from the event; fall back to file mtime
+        if not candidates:
+            return 0
+
+        existing = self.store._batch_existing_ids([c[0] for c in candidates])
+        new_candidates = [(m, t, o) for m, t, o in candidates if m not in existing]
+
+        if not new_candidates:
+            return 0
+
+        memories: list[Memory] = []
+        vectors: list[list] = []
+
+        for mem_id, text, obj in new_candidates:
             ts_raw = obj.get("timestamp", "")
             try:
                 ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).replace(tzinfo=None)
@@ -117,8 +129,7 @@ class ClaudeConnector(Connector):
                 tags=["claude", "agent"],
                 importance=0.9,
             )
+            memories.append(memory)
+            vectors.append(embed(memory.summary))
 
-            self.store.add(memory, embed(memory.summary))
-            count += 1
-
-        return count
+        return self.store.add_batch(memories, vectors)

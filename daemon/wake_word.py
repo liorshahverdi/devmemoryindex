@@ -50,6 +50,45 @@ _BUNDLED_MODEL = "hey_jarvis"  # shipped with openwakeword; replace with hey_dev
 _running = False
 _thread: threading.Thread | None = None
 
+# Set whenever a wake word fires so the voice pipeline can interrupt TTS.
+_tts_interrupt = threading.Event()
+
+# ---------------------------------------------------------------------------
+# Shared audio stream — subscriber pattern
+#
+# The pipeline must NOT open a second sd.InputStream while the wake word
+# listener holds one open; macOS CoreAudio rejects the conflicting device
+# configuration with AUHAL -50 errors.  Instead, the listener's callback fans
+# each raw int16 chunk into every registered subscriber queue so the pipeline
+# records from the same stream without a second open.
+# ---------------------------------------------------------------------------
+
+_audio_subs: list[queue.Queue] = []
+_audio_subs_lock = threading.Lock()
+_listener_active = threading.Event()   # set once the InputStream is open
+_ww_chunk_queue: queue.Queue = queue.Queue(maxsize=50)  # wake-word detector's own feed
+
+
+def subscribe_audio(maxsize: int = 500) -> queue.Queue:
+    """Register a subscriber that receives every raw int16 chunk from the mic.
+
+    Returns a ``queue.Queue[np.ndarray]`` that the caller should drain promptly.
+    Call :func:`unsubscribe_audio` when done to stop receiving chunks.
+    """
+    q: queue.Queue = queue.Queue(maxsize=maxsize)
+    with _audio_subs_lock:
+        _audio_subs.append(q)
+    return q
+
+
+def unsubscribe_audio(q: queue.Queue) -> None:
+    """Remove a previously registered subscriber queue."""
+    with _audio_subs_lock:
+        try:
+            _audio_subs.remove(q)
+        except ValueError:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Acknowledgment chime
@@ -125,16 +164,36 @@ def _listener_thread(threshold: float, model_path: str | None) -> None:
     _running = True
     last_detection: float = 0.0
 
+    def _audio_callback(indata, frames, time_info, status):
+        """PortAudio callback — runs on a real-time audio thread; must not block."""
+        chunk = indata.copy().squeeze()  # int16 (1280,)
+        # Feed wake-word detector
+        try:
+            _ww_chunk_queue.put_nowait(chunk)
+        except queue.Full:
+            pass  # detector can fall behind briefly; no-op
+        # Fan out to all pipeline subscribers
+        with _audio_subs_lock:
+            for sub_q in _audio_subs:
+                try:
+                    sub_q.put_nowait(chunk)
+                except queue.Full:
+                    pass  # subscriber too slow; it will handle the shortage
+
     try:
         with sd.InputStream(
             samplerate=_SAMPLE_RATE,
             channels=1,
             dtype="int16",
             blocksize=_CHUNK_SAMPLES,
-        ) as stream:
+            callback=_audio_callback,
+        ):
+            _listener_active.set()
             while _running:
-                chunk, _overflowed = stream.read(_CHUNK_SAMPLES)
-                audio = chunk.squeeze()  # (1280, 1) → (1280,)
+                try:
+                    audio = _ww_chunk_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
 
                 predictions = oww.predict(audio)
                 score = max(predictions.values()) if predictions else 0.0
@@ -143,6 +202,9 @@ def _listener_thread(threshold: float, model_path: str | None) -> None:
                 if score >= threshold and (now - last_detection) > _COOLDOWN_SECONDS:
                     last_detection = now
                     dlog.write(f"[wake_word] Detected — score={score:.2f}")
+
+                    # Signal pipeline to interrupt any ongoing TTS immediately.
+                    _tts_interrupt.set()
 
                     # Non-blocking put: drop if the pipeline hasn't consumed yet
                     try:
@@ -156,6 +218,7 @@ def _listener_thread(threshold: float, model_path: str | None) -> None:
         dlog.write(f"[wake_word] Listener error: {exc}", "ERROR")
     finally:
         _running = False
+        _listener_active.clear()
         dlog.write("[wake_word] Listener stopped")
 
 

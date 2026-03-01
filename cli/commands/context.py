@@ -42,6 +42,7 @@ def context(
             "context_text": result["context_text"],
             "token_estimate": result["token_estimate"],
             "memory_count": result["memory_count"],
+            "retrieval_trace": result.get("retrieval_trace", {}),
         }
         console.print_json(json.dumps(output))
     else:

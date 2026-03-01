@@ -107,5 +107,17 @@ try:
 except ImportError:
     pass
 
+# T1-E: Memory health dashboard
+from cli.commands.health import health
+app.command()(health)
+
+# T1-D: Audit deprecated memories
+from cli.commands.audit import audit
+app.command()(audit)
+
+# T1-C: Memory consolidation
+from cli.commands.consolidate import consolidate
+app.command()(consolidate)
+
 if __name__ == "__main__":
     app()

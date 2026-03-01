@@ -470,8 +470,571 @@ uv run pytest core/tests/test_hybrid_search.py -v
 uv run pytest core/tests/test_ranking.py -v
 uv run pytest core/tests/test_context_engine.py -v
 uv run pytest api/tests/test_auth.py -v
+uv run pytest daemon/tests/ -v        # Phase 8 voice pipeline + formatter tests
 ```
 **Expect:** All green.
+
+---
+
+## 17. Jarvis Mode — Voice Pipeline (Phase 8.1 + 8.3)
+
+### Prerequisites
+
+```bash
+uv pip install -e '.[jarvis]'   # installs openwakeword, openai-whisper, sounddevice, edge-tts
+ollama serve &                  # LLM backend for _answer()
+
+# Download wake word model (one-time; requires internet)
+python -c "from openwakeword.utils import download_models; download_models(['hey_jarvis'])"
+
+# Enroll your voice (required for speaker gate)
+uv run devmemory voice enroll
+```
+
+### 17a. Unit tests (no hardware required)
+
+```bash
+uv run pytest daemon/tests/ -v
+```
+**Expect:** 54 tests, all green, ~0.15s.
+
+`test_voice_pipeline.py` (16 tests) covers:
+- `ACTIVE → PASSIVE` on silence timeout
+- `ACTIVE → PASSIVE` on each stop phrase (`stop`, `never mind`, `nevermind`, `goodbye`, `quit`, `bye`)
+- Normal query flow: answer spoken, history recorded
+- History capped at `MAX_HISTORY` (3 turns)
+- `run()` consumes `detection_queue` events
+- Speaker gate blocks unrecognised audio → PASSIVE (Phase 8.2)
+- Speaker gate passes when no profile enrolled (fail-open)
+- Speaker gate fail-open when `_verify_speaker` raises an exception
+
+`test_response_formatter.py` (31 tests) covers:
+- Empty / no-results → "Nothing on that."
+- Long answer with no-results phrase in passing → kept
+- Internal error → "Can't reach the store right now."
+- Fenced code blocks stripped; inline backticks de-ticked
+- File paths (`core/foo.py:42`) → basename (`foo.py`)
+- ISO dates → relative phrases ("3 days ago", "yesterday", "last week")
+- Sentence truncation to 3 max
+- Future dates left unchanged
+
+### 17b. Daemon startup — both threads start
+
+```bash
+uv run devmemory daemon start --jarvis
+```
+**Expect in log / stdout:**
+```
+Wake word listener started — say 'hey jarvis' to activate
+[wake_word] Listening — model='hey_jarvis'  threshold=0.5  device=default mic
+[pipeline] Voice pipeline running — waiting for wake word
+Voice pipeline active — say 'hey jarvis' to start
+```
+If `openwakeword` is not installed you'll see a WARN and the pipeline will block indefinitely (wake word never fires). Fix: `uv pip install -e '.[jarvis]'`.
+
+### 17c. Wake word detection
+
+Say **"hey jarvis"** clearly into the default mic.
+
+**Expect:**
+- Two-tone chime plays (880 Hz → 1046 Hz)
+- Log: `[wake_word] Detected — score=0.XX`
+- Log: `[pipeline] Wake word — score=0.XX  entering ACTIVE`
+- Log: `[pipeline] Listening for query…`
+
+### 17d. Query → transcription → answer → TTS
+
+While in ACTIVE state (after wake word), ask: *"What is LanceDB?"*
+
+**Expect:**
+- Log: `[pipeline] Transcribed: 'What is LanceDB?'`
+- Log: `[pipeline] Answer: LanceDB is a vector...`
+- TTS speaks the answer aloud
+
+### 17e. Follow-up without re-triggering wake word
+
+Immediately after the answer, ask: *"How is it different from Postgres?"* (no "hey jarvis")
+
+**Expect:** Transcribes, answers, speaks — same flow, no new wake detection needed.
+Log shows previous exchange was prepended as context.
+
+### 17f. Stop phrase → PASSIVE
+
+Say **"stop"** (or "never mind", "goodbye", "quit", "bye").
+
+**Expect:**
+- TTS speaks "Got it."
+- Log: `[pipeline] Stop phrase detected → returning to PASSIVE`
+- State returns to waiting for wake word
+
+### 17g. Silence timeout → PASSIVE
+
+Trigger wake word, then say nothing for 30 seconds.
+
+**Expect:**
+- Log: `[pipeline] Active window expired → returning to PASSIVE`
+- No crash, no hung thread — pipeline resumes waiting for wake word cleanly
+
+### 17h. Concurrent write safety
+
+Run the daemon and observe the log for 10+ minutes across multiple connector cycles.
+
+**Expect:** No `Append with different schema: missing=[times_retrieved, times_accessed]` errors.
+Each connector run should log only `+N memories` or nothing (if no new data).
+
+### 17i. Smoke-test pipeline logic (no mic, no LLM)
+
+```bash
+uv run python - <<'EOF'
+import time
+from unittest.mock import patch
+import numpy as np
+from daemon import wake_word as ww
+from daemon.voice_pipeline import VoicePipeline
+
+ww.detection_queue.put({"score": 0.9, "time": time.monotonic()})
+p = VoicePipeline()
+
+with patch("daemon.voice_pipeline._check_speaker", return_value=True):
+    with patch("daemon.voice_pipeline._record_with_vad", side_effect=[
+        np.ones(16000, dtype="float32") * 0.1,  # first call: audio
+        None,                                    # second call: silence → exit
+    ]):
+        with patch("daemon.voice_pipeline._transcribe", return_value="What is LanceDB?"):
+            with patch("daemon.voice_pipeline._answer", return_value="LanceDB is a vector DB."):
+                with patch("daemon.voice_pipeline._speak", return_value=False):
+                    p._enter_active()
+
+print("State:", p._state)    # passive
+print("History:", p._history)
+EOF
+```
+**Expect:**
+```
+State: passive
+History: [('What is LanceDB?', 'LanceDB is a vector DB.')]
+```
+
+### 17j. Speaker gate (Phase 8.2)
+
+Requires an enrolled profile (`devmemory voice enroll`).
+
+**Test A — recognised speaker:**
+Trigger wake word, then speak a query in your own voice.
+
+**Expect:**
+- Log: `[speaker] cosine distance=0.XXXX  threshold=0.85` where distance < 0.85
+- Log: `[pipeline] Speaker check: recognised`
+- Query proceeds to transcription/answer/TTS
+
+**Test B — unrecognised speaker:**
+Trigger wake word, then play audio from a different speaker (or speak in an exaggerated different voice).
+
+**Expect:**
+- Log: `[pipeline] Speaker not recognised → returning to PASSIVE`
+- TTS speaks "Do I know you?"
+- Pipeline returns to PASSIVE without answering the query
+
+**Test C — no profile enrolled (fail-open):**
+Delete the profile (`rm ~/.config/devmemory/speaker_profile.pkl` or equivalent), trigger wake word, speak any query.
+
+**Expect:** Query proceeds normally — no gate applied.
+
+**Tuning note:** The speaker cosine distance threshold is `0.85` (`_voice.py`). If your voice is blocked at 0.85, check the logged distance and raise the threshold. Distances for the same speaker across different audio paths (enrollment vs pipeline subscriber) are typically 0.75–0.80; strangers are typically > 0.90.
+
+### 17k. TTS interrupt on mid-response wake word
+
+While the assistant is speaking a response, say **"hey jarvis"** again.
+
+**Expect:**
+- Audio playback stops immediately (within ~50 ms)
+- Log: `[pipeline] TTS interrupted by wake word`
+- Pipeline immediately records the next query (no need to wait for the full response)
+- New query is answered and spoken
+
+**Test the non-interrupt path:** Let a response play through to completion — `_speak()` returns `False`, deadline resets, pipeline continues normally.
+
+### 17l. Daemon stop
+
+```bash
+uv run devmemory daemon stop
+```
+**Expect:**
+```
+Sent SIGTERM to PID(s): <pid>
+```
+Daemon process exits cleanly. Running `devmemory daemon stop` again immediately shows:
+```
+No running daemon found.
+```
+
+---
+
+---
+
+## 18. Score Explainability (T1-A)
+
+### 18a. `score_breakdown` on every search result
+
+```
+search_memories(query="ranking formula", k=3)
+```
+**Expect:** Each result has a `score_breakdown` dict:
+```json
+{
+  "semantic": 0.82,
+  "importance": 0.70,
+  "recency": 0.45,
+  "final": 0.88
+}
+```
+The three components multiplied by their weights (0.75/0.15/0.10) should sum to `final`.
+
+### 18b. `explain_score` — why did this memory rank?
+
+```
+explain_score(
+  memory_id="<id from search result>",
+  query="hybrid search ranking"
+)
+```
+**Expect:**
+```json
+{
+  "id": "...",
+  "summary": "...",
+  "query": "hybrid search ranking",
+  "score_breakdown": {"semantic": 0.79, "importance": 0.80, "recency": 0.60, "final": 0.83},
+  "explanation": "Final score 0.831 = semantic(0.79) × 0.75 + importance(0.80) × 0.15 + recency(0.60) × 0.10. ..."
+}
+```
+
+### 18c. `why_not_included` — debug missing memories
+
+First find a memory ID that won't rank for a given query:
+```
+# Pick an unrelated memory ID from the store
+why_not_included(memory_id="<an unrelated memory id>", query="redis timeout")
+```
+**Expect:** `"reason": "not_in_results"` with explanation about low semantic similarity.
+
+To test budget-dropped: call with `max_tokens=50` on a store with many memories:
+```
+why_not_included(memory_id="<id that does rank>", query="ranking", max_tokens=50)
+```
+**Expect:** `"reason": "dropped_budget"` with explanation about token budget.
+
+---
+
+## 19. Retrieval Trace (T1-B)
+
+### 19a. `build_context` returns dict with trace
+
+```
+result = build_context(query="context engine build", format="claude")
+```
+**Expect:** `result` is a dict, not a string:
+```json
+{
+  "context_text": "<context>...</context>",
+  "retrieval_trace": {
+    "included": ["id1", "id2"],
+    "dropped_dedup": ["id3"],
+    "dropped_budget": [],
+    "intent_detected": "implementation",
+    "total_candidates": 15
+  },
+  "memory_count": 2,
+  "token_estimate": 380
+}
+```
+
+### 19b. CLI `devmemory context --json` includes trace
+
+```bash
+devmemory context "hybrid search" --json
+```
+**Expect:** JSON output contains `retrieval_trace` key with `included`, `dropped_dedup`, `dropped_budget`.
+
+---
+
+## 20. Memory Lifecycle — Forget & Audit (T1-D)
+
+### 20a. Forget a memory
+
+```bash
+# Get an ID to deprecate
+devmemory search "test" --limit 1
+```
+```
+forget_memory(memory_id="<id>", reason="outdated — replaced by new approach")
+```
+**Expect:** `{"status": "ok", "id": "...", "reason": "outdated — replaced by new approach"}`.
+
+### 20b. Forgotten memory excluded from search
+
+```
+# This memory should no longer appear
+search_memories(query="<query that would have matched the memory>")
+```
+**Expect:** The deprecated memory is absent from all results.
+
+### 20c. Audit CLI shows deprecated memories
+
+```bash
+devmemory audit
+```
+**Expect:** Table showing the deprecated memory with its ID, type, summary, and deprecation reason.
+
+```bash
+devmemory audit --json
+```
+**Expect:** JSON array with the same fields.
+
+### 20d. Purge permanently deletes
+
+```bash
+devmemory audit --purge
+```
+**Expect:** `"Permanently deleted N deprecated memories."` Output. Running `devmemory audit` immediately after shows empty.
+
+---
+
+## 21. Store Health Dashboard (T1-E)
+
+### 21a. CLI health report
+
+```bash
+devmemory health
+```
+**Expect:**
+- Summary line: `Memory Store Health  (N total, N active, N deprecated)`
+- Type breakdown table (git_commit, file_content, agent_solution, etc.)
+- Importance distribution histogram (bars proportional to count)
+- Stale count (memories never accessed, >60 days old)
+- Low-CTR count (retrieved 5+ times, accessed <10% of the time)
+
+### 21b. MCP tool returns structured dict
+
+```
+get_store_health()
+```
+**Expect:**
+```json
+{
+  "total": 847,
+  "active": 843,
+  "deprecated": 4,
+  "type_breakdown": {"git_commit": 312, "file_content": 280, ...},
+  "importance_histogram": {"<0.3": 5, "0.3-0.5": 80, ...},
+  "avg_times_accessed": 1.3,
+  "stale_count": 12,
+  "low_ctr_count": 3
+}
+```
+
+---
+
+## 22. Memory Consolidation (T1-C)
+
+### 22a. Consolidate two memories
+
+First add two similar memories:
+```
+id1 = remember_memory(
+  summary="use /api/chat for Ollama RAG",
+  raw_text="Always POST to /api/chat not /api/generate — proper role tokens",
+  importance=0.7
+)["id"]
+
+id2 = remember_memory(
+  summary="Ollama endpoint for instruction-tuned models",
+  raw_text="Use /api/chat endpoint; /api/generate loses instruction formatting",
+  importance=0.8
+)["id"]
+```
+
+```
+consolidate_memories(ids=[id1, id2])
+```
+**Expect:**
+```json
+{
+  "status": "ok",
+  "new_id": "...",
+  "deleted": 2
+}
+```
+
+The new memory should:
+- Contain both raw_text blocks joined with a separator
+- Have `importance = 0.8` (max of the originals)
+- Include tags `consolidated`
+- Be findable by searching for either original's keywords
+
+Original IDs should no longer exist:
+```
+get_memory(id1)   # → null
+get_memory(id2)   # → null
+```
+
+### 22b. CLI consolidate
+
+```bash
+devmemory consolidate <id1> <id2> --summary "canonical Ollama /api/chat pattern"
+```
+**Expect:** `Consolidated 2 memories into new memory <id16chars>...`
+
+### 22c. Too few IDs
+
+```
+consolidate_memories(ids=["one-id"])
+```
+**Expect:** `{"status": "error", "message": "Need at least 2 valid memory IDs to consolidate"}`.
+
+---
+
+## 23. Batch Search (T1-F)
+
+### 23a. Basic batch search
+
+```
+search_batch(queries=["redis timeout", "connection pool sizing", "retry backoff"], k=3)
+```
+**Expect:**
+```json
+{
+  "results": [...],
+  "total_unique": N,
+  "query_count": 3
+}
+```
+Each result has `source_queries` listing which of the 3 queries retrieved it.
+
+### 23b. Deduplication works
+
+A memory relevant to multiple queries should appear only once in `results`, with multiple entries in its `source_queries`.
+
+### 23c. Results are sorted by score
+
+`results[0]["score_breakdown"]["final"]` ≥ `results[1]["score_breakdown"]["final"]`
+
+---
+
+## 24. Auto-Summary on Ingest (T1-G)
+
+### 24a. Enable the flag
+
+```bash
+# Add to ~/.config/devmemory/config.toml manually, or:
+python -c "from core.config import set_auto_summarize; set_auto_summarize(True)"
+```
+
+### 24b. Remember a memory with no summary
+
+```
+remember_memory(
+  summary="",
+  raw_text="Always use exponential backoff with jitter when retrying HTTP calls to avoid thundering herd. Start at 1s, max 60s, jitter ±20%.",
+  importance=0.8
+)
+```
+**With Ollama running:** Summary should be an LLM-generated one-sentence description (not just the first 200 chars).
+**Without Ollama:** Falls back to heuristic first-sentence extraction.
+
+### 24c. Disable the flag
+
+```python
+from core.config import set_auto_summarize
+set_auto_summarize(False)
+```
+
+---
+
+## 25. Memory Entanglement — Edge Graph (T2-A)
+
+### 25a. Create an edge
+
+```
+# First get two memory IDs
+results = search_memories(query="lancedb schema", k=2)
+id_a = results[0]["id"]
+id_b = results[1]["id"]
+
+link_memories(from_id=id_a, to_id=id_b, edge_type="references")
+```
+**Expect:** `{"status": "ok", "from": "...", "to": "...", "type": "references", "confidence": 1.0}`
+
+Calling again with the same triple:
+```
+link_memories(from_id=id_a, to_id=id_b, edge_type="references")
+```
+**Expect:** `{"status": "duplicate", ...}`
+
+### 25b. Invalid edge type
+
+```
+link_memories(from_id=id_a, to_id=id_b, edge_type="invented_type")
+```
+**Expect:** `{"status": "error", "message": "Invalid edge_type 'invented_type'. Valid: [...]"}`
+
+### 25c. Failure → fix causal chain
+
+```
+# Simulate a failure note that was fixed by a commit
+failure_id = remember_failure(
+  summary="LanceDB table corrupt after partial delete",
+  what_was_tried="collection.delete() without write lock",
+  why_it_failed="concurrent Lance fragment writes"
+)["id"]
+
+fix_id = remember_memory(
+  summary="Always acquire _write_lock before LanceDB delete",
+  raw_text="Use threading.Lock() around all LanceDB writes to prevent corruption"
+)["id"]
+
+link_memories(from_id=failure_id, to_id=fix_id, edge_type="fixed_by")
+```
+
+### 25d. `get_memory_graph` returns subgraph
+
+```
+get_memory_graph(memory_id=failure_id, depth=2)
+```
+**Expect:**
+```json
+{
+  "root": "<failure_id>",
+  "nodes": ["<failure_id>", "<fix_id>"],
+  "edges": [{"from_id": "...", "to_id": "...", "edge_type": "fixed_by", "confidence": 1.0, ...}],
+  "node_count": 2,
+  "edge_count": 1
+}
+```
+
+### 25e. `trace_causality` follows the chain
+
+```
+trace_causality(memory_id=failure_id)
+```
+**Expect:**
+```json
+{
+  "chain": [
+    {"memory_id": "<failure_id>", "step": 0, "via_edge": null},
+    {"memory_id": "<fix_id>", "step": 1, "via_edge": "fixed_by"}
+  ],
+  "length": 2,
+  "root_cause_id": "<fix_id>"
+}
+```
+
+### 25f. Auto-inference job
+
+```bash
+uv run python -m daemon.jobs.edge_inference
+```
+**Expect:** JSON output like `{"edges_added": N, "pairs_scanned": M}`. The job scans failure_notes vs commits/solutions for keyword overlap.
 
 ---
 
@@ -492,3 +1055,22 @@ uv run pytest api/tests/test_auth.py -v
 | MCP `reinforce_memory(id)` | `{"status": "ok", "new_importance": N}`, N ≤ 0.95 |
 | MCP `get_codebase_map(repo="devmemoryindex")` | Clusters with directory-name labels, `total_files` > 0 |
 | MCP `plan_task(description="fix scoring")` | `{"plan": "<text>", "memory_count": N}` |
+| `uv run pytest daemon/tests/ -v` | 54 tests green, ~0.15s |
+| `uv run devmemory daemon stop` | "Sent SIGTERM to PID(s): …" or "No running daemon found." |
+| `devmemory daemon start --jarvis` | Both "Wake word listener started" and "Voice pipeline active" in log |
+| Say "hey jarvis" → ask question | Chime → transcribe → answer spoken → state returns to ACTIVE |
+| Say "stop" mid-session | "Got it." spoken, log shows PASSIVE |
+| 30s silence after wake | Log shows "Active window expired → returning to PASSIVE" |
+| Daemon running 10+ min | No `missing=[times_retrieved, times_accessed]` errors in log |
+| `search_memories(query="x")` | Each result has `score_breakdown: {semantic, importance, recency, final}` |
+| `build_context(query="x")` | Returns dict with `context_text` + `retrieval_trace` — not a bare string |
+| `explain_score(id, query)` | Returns `score_breakdown` + human-readable `explanation` string |
+| `forget_memory(id, reason="test")` | `{"status":"ok"}` → memory absent from subsequent searches |
+| `devmemory audit` | Shows the forgotten memory in a table |
+| `devmemory health` | Shows type breakdown, importance histogram, stale/low-CTR counts |
+| `consolidate_memories([id1, id2])` | `{"status":"ok", "deleted":2}` → originals gone, new merged memory present |
+| `search_batch(queries=["a","b"])` | Returns deduplicated results with `source_queries` per entry |
+| `link_memories(a, b, "fixed_by")` | `{"status":"ok"}`, second call returns `{"status":"duplicate"}` |
+| `get_memory_graph(id, depth=2)` | Returns `{root, nodes, edges, node_count, edge_count}` |
+| `trace_causality(id)` | Returns `{chain, length, root_cause_id}` |
+| `uv run python -m daemon.jobs.edge_inference` | `{"edges_added": N, "pairs_scanned": M}` |

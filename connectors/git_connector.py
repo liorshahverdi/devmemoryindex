@@ -22,7 +22,6 @@ class GitConnector(Connector):
         return count
 
     def _index_repo(self, path: str) -> int:
-        count = 0
         result = subprocess.run(
             ["git", "-C", path, "log",
              "--pretty=format:%H|%s|%an|%ct",
@@ -34,27 +33,33 @@ class GitConnector(Connector):
 
         repo_name = Path(path).resolve().name
 
+        # Pre-filter: compute all candidate IDs and drop already-stored ones
+        # in a single batch check before fetching any commit details.
+        candidates = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("|", 3)
             if len(parts) < 4:
                 continue
             sha, subject, author, ts = parts
+            mem_id = hashlib.sha256((sha + repo_name).encode()).hexdigest()
+            candidates.append((mem_id, sha, subject, author, ts))
 
-            mem_id = hashlib.sha256(
-                (sha + repo_name).encode()
-            ).hexdigest()
+        existing = self.store._batch_existing_ids([c[0] for c in candidates])
+        new_candidates = [c for c in candidates if c[0] not in existing]
 
-            if self.store.exists(mem_id):
-                continue
+        if not new_candidates:
+            return 0
 
-            # Fetch full commit body (bullet points, extended description)
+        memories: list[Memory] = []
+        vectors: list[list] = []
+
+        for mem_id, sha, subject, author, ts in new_candidates:
             body_result = subprocess.run(
                 ["git", "-C", path, "log", "-1", "--format=%b", sha],
                 capture_output=True, text=True
             )
             body = body_result.stdout.strip() if body_result.returncode == 0 else ""
 
-            # Get diff stat for richer context
             diff_result = subprocess.run(
                 ["git", "-C", path, "diff", "--stat", f"{sha}~1", sha],
                 capture_output=True, text=True
@@ -78,11 +83,10 @@ class GitConnector(Connector):
             )
 
             embed_text = f"{subject}\n{body}".strip() if body else subject
-            vector = embed(embed_text[:512])
-            self.store.add(memory, vector)
-            count += 1
+            memories.append(memory)
+            vectors.append(embed(embed_text[:512]))
 
-        return count
+        return self.store.add_batch(memories, vectors)
 
     def _estimate_importance(self, message: str) -> float:
         msg_lower = message.lower()

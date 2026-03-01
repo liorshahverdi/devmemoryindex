@@ -122,11 +122,44 @@
 
 | `cli/commands/search.py` — `--speaker` flag | **Done** | `devmemory search --speaker <name>` filters by `speaker:<name>` tag. `--speaker self` returns own utterances. Passed to `hybrid_search(speaker_filter=...)`. |
 
+| `core/ranking.py` — `compute_score_breakdown()` | **Done** | T1-A. Returns `{semantic, importance, recency, final}` breakdown. `compute_score()` now delegates to it. Every `hybrid_search` result carries `score_breakdown`. |
+| `core/schema.py` — `status`, `deprecation_reason` | **Done** | T1-D. `Memory` dataclass gains `status: str = "active"` and `deprecation_reason: str = ""`. Schema migration adds both columns for existing stores. |
+| `core/memory_store.py` — `_normalize_timestamp()` | **Done** | Fixes PyArrow ArrowTypeError when Memory.timestamp is an ISO string. Coerces str/numeric timestamps to `datetime` before `from_pylist`. |
+| `core/memory_store.py` — deprecated filter | **Done** | T1-D. `hybrid_search` excludes `status='deprecated'` memories from all active searches via `(status = 'active' OR status IS NULL)` WHERE clause. |
+| `core/memory_store.py` — `forget()`, `get_deprecated()` | **Done** | T1-D. `forget(id, reason)` sets `status='deprecated'` + `deprecation_reason`. `get_deprecated()` returns all deprecated records for audit. |
+| `core/memory_store.py` — `get_store_health()` | **Done** | T1-E. Returns total/active/deprecated counts, type breakdown, importance histogram, avg_times_accessed, stale_count (never accessed + >60 days old), low_ctr_count. |
+| `core/memory_store.py` — `consolidate()` | **Done** | T1-C. Merges N memories into one at max(importance). Combines raw_texts, deletes originals, re-embeds from the provided or best summary. |
+| `core/context_engine.py` — `retrieval_trace` | **Done** | T1-B. `build()` result now includes `retrieval_trace: {included, dropped_dedup, dropped_budget, intent_detected, total_candidates}`. |
+| `core/edge_store.py` — `EdgeStore` | **Done** | T2-A. Typed edge graph in a separate LanceDB `edges` table. Fields: `from_id, to_id, edge_type, confidence, source, created_at`. `add_edge()`, `get_edges()`, `get_graph(depth)`, `trace_causality()`, `delete_edges_for()`. |
+| `core/edge_provider.py` — singleton | **Done** | T2-A. `get_edges()` returns shared `EdgeStore` instance, parallel to `store_provider`. |
+| `core/config.py` — `get_auto_summarize()` | **Done** | T1-G. Returns `[connectors] auto_summarize` flag. `set_auto_summarize(bool)` persists it. |
+| `core/llm_backend.py` — `llm_summarize()` | **Done** | T1-G. Calls configured LLM backend to produce a 1-sentence summary from raw_text. Returns None on failure (callers fall back to heuristic truncation). |
+| `mcp_server/tools.py` — `explain_score` | **Done** | T1-A. Explains why a specific memory ranked where it did for a given query: per-component breakdown + human-readable sentence. |
+| `mcp_server/tools.py` — `why_not_included` | **Done** | T1-A. Diagnoses whether a memory was absent from `build_context` due to: not in results / dropped by dedup / dropped by token budget. |
+| `mcp_server/tools.py` — `forget_memory` | **Done** | T1-D. Deprecates a memory with a reason. Excluded from all searches, preserved for audit. |
+| `mcp_server/tools.py` — `get_store_health` | **Done** | T1-E. Agent-callable JSON health report. |
+| `mcp_server/tools.py` — `consolidate_memories` | **Done** | T1-C. Agent-callable memory merge tool. |
+| `mcp_server/tools.py` — `search_batch` | **Done** | T1-F. Parallel hybrid search across multiple queries. Deduplicates merged results, attaches `source_queries` per result. |
+| `mcp_server/tools.py` — `build_context` return type | **Done** | T1-B. Now returns `dict{context_text, retrieval_trace, memory_count, token_estimate}` instead of bare string. |
+| `mcp_server/tools.py` — `remember_memory` + auto-summary | **Done** | T1-G. When `[connectors] auto_summarize = true`, calls `llm_summarize()` for auto-generated summaries on blank inputs. |
+| `mcp_server/tools.py` — `link_memories` | **Done** | T2-A. Creates typed edge: `caused_by / fixed_by / references / supersedes / contradicts / related_to`. |
+| `mcp_server/tools.py` — `get_memory_graph` | **Done** | T2-A. Returns subgraph up to N hops from a root memory: `{root, nodes, edges, node_count, edge_count}`. |
+| `mcp_server/tools.py` — `trace_causality` | **Done** | T2-A. Follows `caused_by`/`fixed_by` edges to root cause. Returns ordered `{chain, length, root_cause_id}`. |
+| `mcp_server/server.py` — **19 tools** | **Done** | Up from 10. All new Tier-1 and T2-A tools registered. Instructions updated with lifecycle + graph guidance. |
+| `cli/commands/health.py` | **Done** | T1-E. `devmemory health [--json]` — Rich table: type breakdown, importance histogram, stale/low-CTR counts. |
+| `cli/commands/audit.py` | **Done** | T1-D. `devmemory audit [--purge] [--json]` — shows all deprecated memories with reasons. `--purge` permanently deletes them. |
+| `cli/commands/consolidate.py` | **Done** | T1-C. `devmemory consolidate <id1> <id2> ... [--summary "..."]` — merges memories from CLI. |
+| `daemon/jobs/edge_inference.py` | **Done** | T2-A. Background auto-linking: failure_notes → commits/solutions via keyword overlap (≥2 terms → `fixed_by`, ≥3 → `references`). |
+
+**Test coverage (post-expansion):**
+- Total: **348 passing, 1 xfailed** across all suites
+- New: `build_context` tests updated for `dict` return + `retrieval_trace` assertion
+
 **What's next:**
-1. **Phase 8.1 — Wake word detection** (`daemon/wake_word.py`, `openwakeword`). Entry point for the full Jarvis Mode stack.
-2. **Phase 8.2 — Speaker gate** ("Do I know you?") — wires `is_self()` into the wake handler.
-3. **Phase 7.5** — VSCode Extension (deferred)
-4. **Phase 7.6** — Web UI (deferred)
+1. **T2-B — macOS Menu Bar** (`daemon/menu_bar.py`, rumps) — visual Jarvis state indicator
+2. **T2-C — Proactive surfacing** (`daemon/watcher.py` expansion) — `git checkout` / test failure triggers
+3. **T3-A — Access-pattern decay** — replace uniform time decay with recency_access_boost
+4. **T2-D / T2-E** — VSCode Extension + Web UI (deferred)
 
 ---
 
@@ -4162,97 +4195,88 @@ devmemory plan "fix hybrid search scoring" --repo devmemoryindex --save
 
 ---
 
-### 8.1 Wake Word Detection
+### 8.1 Wake Word Detection ✅ Done
 
 **New file:** `daemon/wake_word.py`
 
 - Uses `openwakeword` (MIT, CPU-only, no cloud, ~4MB model).
-- Listens on default mic in a background thread; posts to a `queue.Queue` on detection.
-- Ships with a pre-trained `"hey_devmem"` model (generated via openWakeWord's synthetic data pipeline — phrase sounds close enough to its built-in `"hey_jarvis"` model to use as a starting point, with fine-tuning on 1000 synthetic samples).
-- Falls back to `"hey_jarvis"` if custom model not found (configurable via `devmemory config set wake-word`).
-- Threshold configurable: `devmemory config set wake-threshold 0.7` (default 0.5).
+- Listens on default mic in a background thread; posts to `detection_queue: Queue` on detection.
+- Uses bundled `"hey_jarvis"` model (configurable via `[jarvis] wake_model` in `config.toml`).
+- Threshold configurable via `[jarvis] wake_threshold` (default 0.5).
+- Plays a two-tone ascending chime on each detection (880 Hz → 1046 Hz, fade-in/out, non-blocking).
 - Integrated into `daemon/scheduler.py` as a `threading.Thread` alongside the connector loop.
+- 3-second cooldown suppresses re-detection after a hit; `maxsize=1` queue drops stale events when pipeline is busy.
 
-**New files:** `daemon/wake_word.py`, `data/hey_devmem.tflite` (pre-trained wake word model)
+**New file:** `daemon/wake_word.py`
 
 **Modified:** `daemon/scheduler.py` (start wake thread), `pyproject.toml` (`[jarvis]` extra)
 
 **New dep:** `openwakeword>=0.6`
 
-**Verify:**
+**Install:**
 ```bash
-uv pip install 'devmemoryindex[jarvis]'
-devmemory daemon start --jarvis   # starts wake word thread
-# say "hey devmem" → chime plays
+uv pip install -e '.[jarvis]'
 ```
 
 ---
 
-### 8.2 Speaker Gate
+### 8.2 Speaker Gate ✅ Done
 
-**Modified:** `core/speaker_profile.py`, `daemon/wake_word.py`
+**Modified:** `daemon/voice_pipeline.py`, `cli/commands/_voice.py`, `core/speaker_profile.py`
 
-After wake word fires, record a 2-second clip and run it through the existing pyannote speaker embedding + cosine gate:
+Speaker verification runs on the first 8-second query recording inside `_enter_active()`. Uses pyannote embeddings + cosine distance gate.
 
-```python
-profile = load_profile()
-if profile is None:
-    speak("I'm not set up yet. Run: devmemory voice enroll.")
-    return
-if not is_self(get_embedding(clip), profile):
-    speak("Do I know you?")
-    return
-# proceed to query recording
-```
+- `_check_speaker(audio_f32)` in `voice_pipeline.py` wraps `_verify_speaker()` from `cli/commands/_voice.py`. Fail-open: returns `True` when no profile enrolled or pyannote missing.
+- `SPEAKER_GATE_ENABLED = True` module-level flag; set `False` to bypass during development.
+- Threshold tuned to `0.85` cosine distance (pyannote embeddings vary ~0.75 across sessions; different speakers land above 0.9).
+- Logged: `[speaker] cosine distance=X.XXXX  threshold=0.85` on every check.
+- `devmemory voice enroll` — 30s enrollment recording saved to `~/.devmemory/speaker_profile.json`.
 
-- `is_self()` already exists in `core/speaker_profile.py` — no new logic needed.
-- The 2s clip is reused as the start of query recording if speaker is confirmed (avoids re-recording).
-- Threshold defaults to 0.25 (existing value); tunable via `devmemory config set speaker-threshold`.
-
-**No new files.** Just wires the gate into `daemon/wake_word.py`.
+**Tests:** 5 new tests in `TestSpeakerGate` in `daemon/tests/test_voice_pipeline.py` — all 54 tests pass.
 
 ---
 
-### 8.3 Voice Pipeline Orchestration
+### 8.3 Voice Pipeline Orchestration ✅ Done
 
 **New file:** `daemon/voice_pipeline.py`
 
-Owns the stateful loop after the speaker gate clears:
+State machine: `PASSIVE → ACTIVE → PROCESSING → RESPONDING → ACTIVE (reset timer) → PASSIVE (timeout/stop)`
 
-1. **VAD-gated recording** — extend existing sounddevice recording; use `webrtcvad` to detect end-of-speech (1.2s silence → stop). Avoids fixed-duration clips.
-2. **Whisper transcription** — `whisper.load_model("tiny")` (already in `[voice]`). Returns text.
-3. **Intent routing** — `classify_intent(text)` → maps to action:
-   - `recall` → `store.hybrid_search(..., sort_by_time=True)` → timeline response
-   - `search` / `architecture` / `implementation` → `hybrid_search` → top result spoken
-   - `ask` / `debug` → `RAGEngine.ask()` streamed to TTS
-   - bare "remember ..." prefix → `store.add()` → "Got it."
-4. **Response** — via `daemon/response_formatter.py` → `edge-tts` / `say` fallback.
+- **ACTIVE window:** 30s idle timeout; reset after every successful exchange.
+- **VAD:** RMS-based silence gate (`VAD_SILENCE_RMS = 0.005`) — returns `None` on silent recordings, no `webrtcvad` dep needed.
+- **Whisper transcription:** `whisper.load_model("tiny")`, discards results with `avg_no_speech_prob > 0.5`. Never calls `sys.exit`.
+- **Stop phrases:** `{"stop", "never mind", "nevermind", "goodbye", "quit", "bye"}` → speaks "Got it." and returns to PASSIVE.
+- **Answer:** `RAGEngine.ask(stream=False, plan=True)` — same pipeline as `devmemory ask`.
+- **ConversationBuffer (Phase 8.6 inline):** Last `MAX_HISTORY=3` `(user, assistant)` pairs prepended to each RAG query for follow-up coherence. Cleared on each new wake.
+- **Phase 8.2 hookup point:** `_enter_active()` has a natural insertion point for `_is_self(brief_recording)` speaker gate before the query loop.
 
-**New dep:** `webrtcvad` (Google WebRTC VAD, MIT, pure C extension — very low overhead).
+**Modified:** `daemon/scheduler.py` — starts `VoicePipeline().run` in a daemon thread alongside wake word thread.
 
-**New files:** `daemon/voice_pipeline.py`, `daemon/response_formatter.py`
+**Tests:** `daemon/tests/test_voice_pipeline.py` — 11 unit tests (no hardware); all pass in 0.13s.
 
 ---
 
-### 8.4 Jarvis Response Style
+### 8.4 Jarvis Response Style ✅ Done
 
 **New file:** `daemon/response_formatter.py`
 
-Rules for spoken output — enforced here, not in the retrieval layer:
+`format_for_voice(answer: str) -> str` — sits between `_answer()` and `_speak()` in the pipeline.
 
-| Situation | Spoken response |
+| Input | Output |
 |---|---|
-| 0 results | "Nothing on that." |
-| 1 result | "[summary, ≤ 15 words]." |
-| 2–3 results | "Two things. [top summary]. Want the others?" |
-| > 3 results | "Three things. [top summary]. Want the rest?" |
-| remember success | "Got it." |
-| RAG answer | Stream directly to TTS, sentence-buffered (reuses `_speak.py`) |
-| Error | "Can't reach the store right now." |
+| Empty string | "Nothing on that." |
+| Short answer containing a no-results phrase | "Nothing on that." |
+| Long answer mentioning no-results phrase in passing | Kept (truncated to 3 sentences) |
+| Internal error text | "Can't reach the store right now." |
+| Fenced code block | Stripped entirely |
+| Inline `` `code` `` | De-backticked (text kept) |
+| `core/memory_store.py:42` | `memory_store.py` |
+| ISO date `2026-02-14` | `"15 days ago"` / `"last week"` / `"yesterday"` |
+| Answer > 3 sentences | Truncated after sentence 3 |
 
-- User's name used when enrolled: "Found it, [name]." → pulled from `speaker_profile["user_name"]`.
-- Timestamps humanised: "2 days ago", "last Tuesday", "an hour ago" — not ISO strings.
-- No source file paths spoken aloud (irrelevant in voice context).
+History in the pipeline stores the **raw** answer (for richer follow-up RAG context); TTS speaks the **formatted** version.
+
+**Tests:** `daemon/tests/test_response_formatter.py` — 31 tests covering all transform rules.
 
 ---
 
@@ -4347,20 +4371,42 @@ rumps>=0.4
 # pulls in [speak]: edge-tts
 ```
 
-| Phase | New files | Modified files | New dep |
-|---|---|---|---|
-| 8.1 | `daemon/wake_word.py`, `data/hey_devmem.tflite` | `daemon/scheduler.py`, `pyproject.toml` | `openwakeword` |
-| 8.2 | — | `daemon/wake_word.py`, `core/speaker_profile.py` | — (uses pyannote) |
-| 8.3 | `daemon/voice_pipeline.py`, `daemon/response_formatter.py` | `cli/commands/daemon_cmd.py` | `webrtcvad` |
-| 8.4 | `daemon/response_formatter.py` | — | — |
-| 8.5 | `daemon/menu_bar.py` | `daemon/scheduler.py` | `rumps` |
-| 8.6 | `daemon/conversation.py` | `daemon/voice_pipeline.py` | — |
-| 8.7 | — | `daemon/watcher.py`, `core/config.py` | — |
-| 8.8 | — | `daemon/voice_pipeline.py` | — |
+| Phase | Status | New files | Modified files | New dep |
+|---|---|---|---|---|
+| 8.1 | ✅ Done | `daemon/wake_word.py` | `daemon/scheduler.py`, `pyproject.toml` | `openwakeword` |
+| 8.2 | ✅ Done | — | `daemon/voice_pipeline.py`, `cli/commands/_voice.py` | — (uses pyannote, already in `[jarvis]`) |
+| 8.3 | ✅ Done | `daemon/voice_pipeline.py`, `daemon/tests/test_voice_pipeline.py` | `daemon/scheduler.py` | — (RMS VAD, no webrtcvad) |
+| 8.4 | ✅ Done | `daemon/response_formatter.py`, `daemon/tests/test_response_formatter.py` | `daemon/voice_pipeline.py` | — |
+| 8.5 | Pending | `daemon/menu_bar.py` | `daemon/scheduler.py` | `rumps` |
+| 8.6 | Inline in 8.3 | — | — | — |
+| 8.7 | Pending | — | `daemon/watcher.py`, `core/config.py` | — |
+| 8.8 | Pending | — | `daemon/voice_pipeline.py` | — |
 
-**Recommended implementation order: 8.1 → 8.2 → 8.3 → 8.4 → 8.5 → 8.6 → 8.7 → 8.8**
+**Recommended next: 8.5 → 8.7 → 8.8**
 
-8.1 and 8.2 are the core identity loop. Everything after is progressive enhancement.
+8.6 ConversationBuffer is already inline in `VoicePipeline._enter_active()` (last 3 turns). Extract to a class in 8.6 only if it needs to grow or be shared.
+
+### Infrastructure fix — Shared audio stream + TTS interrupt (2026-03-01)
+
+Fixed two runtime issues discovered during end-to-end jarvis testing:
+
+1. **Single shared mic stream** — wake word listener (`daemon/wake_word.py`) now uses a callback-based `sd.InputStream`. Audio chunks are fanned out to `_ww_chunk_queue` (wake word detector) AND any registered `_audio_subs` queues (pipeline recording). `_record_with_vad()` in `voice_pipeline.py` now calls `subscribe_audio()` / `unsubscribe_audio()` instead of opening a second `sd.InputStream` via `sd.rec()`. Eliminated macOS CoreAudio AUHAL `-50` errors that occurred when two streams competed for the default input device simultaneously.
+
+2. **TTS interrupt on wake word** — `StreamingSpeaker` (`cli/commands/_speak.py`) gained a `cancel()` method that kills the current `afplay`/`say` subprocess and drains the sentence queue. `_speak()` in `voice_pipeline.py` runs `finish()` in a background thread and polls `_tts_interrupt` (a `threading.Event` set by the wake word listener on every detection) every 50 ms. When the user says "hey jarvis" mid-response, playback stops within one poll cycle (~50 ms), the stale detection event is drained, and `_record_with_vad()` immediately starts capturing the follow-up query.
+
+3. **LLM speed** — `plan=False` in `_answer()` halves LLM round-trips (one call instead of two). Whisper model cached in `_whisper_model` module variable after first load; subsequent queries skip the 1–2s cold-start penalty.
+
+4. **`devmemory daemon stop`** — added `stop` command to `cli/commands/daemon_cmd.py` (sends SIGTERM to running daemon process).
+
+### Infrastructure fix — LanceDB concurrent write safety (2026-03-01)
+
+Fixed two bugs that caused `Append with different schema: missing=[times_retrieved, times_accessed]` errors in the daemon:
+
+1. **Write lock** — `MemoryStore._write_lock: threading.Lock()` serialises all writes (`add`, `add_batch`, `update`, `delete`, `reinforce`, `_increment_counter`, `boost_importance`). LanceDB 0.29.x is not safe for concurrent writes from the same process; the watcher thread and connector loop were racing.
+
+2. **Explicit schema cast** — `add()` and `add_batch()` now use `pa.Table.from_pylist(records, schema=_schema)` before calling `collection.add()`. Prevents PyArrow dict-inference from producing a mismatched schema.
+
+3. **Connector batching** — `GitConnector` and `ClaudeConnector` now call `store.add_batch()` once per run (pre-filter all IDs in one `_batch_existing_ids` call, then single `add_batch`). Previously, each record created a separate Lance fragment; over time this caused 14k+ fragments for 5k rows.
 
 ---
 

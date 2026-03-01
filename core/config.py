@@ -301,3 +301,22 @@ def get_all_intervals() -> dict[str, int]:
     """Return {connector: interval_seconds} for all known connectors."""
     stored = load().get("schedule", {})
     return {name: stored.get(name, default) for name, default in _DEFAULT_INTERVALS.items()}
+
+
+# ── Connector auto-summary helpers (T1-G) ─────────────────────────────────────
+
+
+def get_auto_summarize() -> bool:
+    """Return True if connectors should LLM-summarize raw_text on ingest.
+
+    Set [connectors] auto_summarize = true in config.toml to enable.
+    Falls back to False (heuristic truncation) if the LLM is unavailable.
+    """
+    return bool(load().get("connectors", {}).get("auto_summarize", False))
+
+
+def set_auto_summarize(enabled: bool) -> None:
+    """Persist the auto_summarize flag to config.toml."""
+    data = load()
+    data.setdefault("connectors", {})["auto_summarize"] = enabled
+    save(data)
