@@ -120,11 +120,13 @@
 - API auth: 10 passing
 - Total: ~242 tests
 
+| `cli/commands/search.py` — `--speaker` flag | **Done** | `devmemory search --speaker <name>` filters by `speaker:<name>` tag. `--speaker self` returns own utterances. Passed to `hybrid_search(speaker_filter=...)`. |
+
 **What's next:**
-1. **Phase 8 — Jarvis Mode** — Always-on "hey devmem" wake word, speaker gate ("Do I know you?"), VAD-gated query recording, intent routing, punchy TTS responses, macOS menu bar. See Phase 8 spec below. Start with 8.1 (wake word).
-2. **`--speaker` flag on `devmemory search`** — 10-line CLI addition to expose existing `hybrid_search(speaker_filter=...)` parameter. Good warm-up before Phase 8.
-3. **Phase 7.5** — VSCode Extension (deferred — see spec below)
-4. **Phase 7.6** — Web UI (deferred — see spec below)
+1. **Phase 8.1 — Wake word detection** (`daemon/wake_word.py`, `openwakeword`). Entry point for the full Jarvis Mode stack.
+2. **Phase 8.2 — Speaker gate** ("Do I know you?") — wires `is_self()` into the wake handler.
+3. **Phase 7.5** — VSCode Extension (deferred)
+4. **Phase 7.6** — Web UI (deferred)
 
 ---
 
