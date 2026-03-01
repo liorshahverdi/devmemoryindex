@@ -479,6 +479,30 @@ class MemoryStore:
         safe_id = memory_id.replace("'", "''")
         self.collection.delete(f"id = '{safe_id}'")
 
+    def get_ids_by_source(self, source: str, type_filter: str | None = None) -> set[str]:
+        """Return the set of memory IDs stored for a given source path.
+
+        Used by connectors to detect stale chunks: after re-indexing a file,
+        any ID in this set that wasn't produced by the current content is stale
+        and should be deleted.
+        """
+        safe_source = source.replace("'", "''")
+        where = f"source = '{safe_source}'"
+        if type_filter:
+            safe_type = type_filter.replace("'", "''")
+            where += f" AND type = '{safe_type}'"
+        try:
+            results = (
+                self.collection
+                .search()
+                .where(where)
+                .limit(10000)
+                .to_list()
+            )
+            return {r["id"] for r in results}
+        except Exception:
+            return set()
+
     def summary_quality(self) -> dict:
         """Return summary length distribution and IDs of short-summary memories.
 

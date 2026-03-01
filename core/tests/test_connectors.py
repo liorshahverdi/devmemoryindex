@@ -201,6 +201,78 @@ class TestFilesystemConnectorIndexFile:
 
         assert count >= 2
 
+    def test_stale_chunks_evicted_on_reindex(self, store, tmp_path):
+        """When file content changes, old chunks are deleted on the next index run."""
+        src = tmp_path / "src"
+        src.mkdir()
+        py_file = src / "lib.py"
+
+        # First version: write enough lines for exactly one chunk
+        v1_lines = [f"# version 1 line {i}" for i in range(MIN_CHUNK_LINES + 2)]
+        py_file.write_text("\n".join(v1_lines))
+
+        connector = self._make_connector(store, [str(src)])
+        with patch("connectors.filesystem_connector.embed", return_value=_ZERO_VEC):
+            added_v1 = connector._index_file(py_file, src)
+
+        assert added_v1 >= 1
+        count_after_v1 = store.count()
+
+        # Second version: completely different content — all chunk IDs change
+        v2_lines = [f"# version 2 totally different {i}" for i in range(MIN_CHUNK_LINES + 2)]
+        py_file.write_text("\n".join(v2_lines))
+
+        with patch("connectors.filesystem_connector.embed", return_value=_ZERO_VEC):
+            added_v2 = connector._index_file(py_file, src)
+
+        # New chunks were added for v2 content
+        assert added_v2 >= 1
+        # Store count should be the same as after v1 (stale v1 chunks evicted,
+        # replaced by same number of v2 chunks)
+        assert store.count() == count_after_v1
+
+        # All remaining memories should reflect v2 content
+        rows = store.get_all()
+        for row in rows:
+            assert "version 2" in row["raw_text"]
+
+    def test_unchanged_file_evicts_nothing(self, store, tmp_path):
+        """Re-indexing an unchanged file adds 0 and evicts 0."""
+        src = tmp_path / "src"
+        src.mkdir()
+        py_file = src / "stable.py"
+        py_file.write_text("\n".join([f"# stable line {i}" for i in range(MIN_CHUNK_LINES + 5)]))
+
+        connector = self._make_connector(store, [str(src)])
+        with patch("connectors.filesystem_connector.embed", return_value=_ZERO_VEC):
+            connector._index_file(py_file, src)
+            count_before = store.count()
+            added = connector._index_file(py_file, src)
+
+        assert added == 0
+        assert store.count() == count_before  # nothing evicted either
+
+    def test_get_ids_by_source(self, store, tmp_path):
+        """MemoryStore.get_ids_by_source returns IDs for the given source path."""
+        src = tmp_path / "src"
+        src.mkdir()
+        py_file = src / "module.py"
+        py_file.write_text("\n".join([f"# line {i}" for i in range(MIN_CHUNK_LINES + 5)]))
+
+        connector = self._make_connector(store, [str(src)])
+        with patch("connectors.filesystem_connector.embed", return_value=_ZERO_VEC):
+            connector._index_file(py_file, src)
+
+        ids = store.get_ids_by_source(str(py_file), type_filter="file_content")
+        assert len(ids) >= 1
+        # All returned IDs should actually exist in the store
+        for mem_id in ids:
+            assert store.exists(mem_id)
+
+    def test_get_ids_by_source_empty_for_unknown_path(self, store):
+        ids = store.get_ids_by_source("/no/such/file.py", type_filter="file_content")
+        assert ids == set()
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Markdown connector — pure helpers

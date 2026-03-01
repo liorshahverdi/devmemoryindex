@@ -112,6 +112,10 @@ class FilesystemConnector(Connector):
         mtime = datetime.fromtimestamp(path.stat().st_mtime)
         importance = _estimate_importance(path)
 
+        # IDs already stored for this file — used to evict stale chunks below.
+        existing_ids = self.store.get_ids_by_source(str(path), type_filter="file_content")
+        current_ids: set[str] = set()
+
         added = 0
         for start, end, chunk_lines in _chunk_lines(lines):
             chunk_text = "\n".join(chunk_lines).strip()
@@ -121,6 +125,8 @@ class FilesystemConnector(Connector):
             mem_id = hashlib.sha256(
                 f"{path}|{start}|{chunk_text[:200]}".encode()
             ).hexdigest()
+
+            current_ids.add(mem_id)
 
             if self.store.exists(mem_id):
                 continue
@@ -144,6 +150,13 @@ class FilesystemConnector(Connector):
             )
             self.store.add(memory, embed(embed_text))
             added += 1
+
+        # Evict chunks that were stored for this file but are no longer in the
+        # current content. These accumulate silently as the file evolves and
+        # pollute search results with stale code versions.
+        for stale_id in existing_ids - current_ids:
+            self.store.delete(stale_id)
+
         return added
 
 
