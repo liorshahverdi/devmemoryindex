@@ -14,6 +14,7 @@ def search(
     k: int = typer.Option(5, "--limit", "-k", help="Number of results"),
     memory_type: str | None = typer.Option(None, "--type", "-t", help="Filter by memory type"),
     repo: str | None = typer.Option(None, "--repo", "-r", help="Filter by repo name"),
+    speaker: str | None = typer.Option(None, "--speaker", help="Filter by speaker name (use 'self' for your own utterances)"),
     voice: bool = typer.Option(False, "--voice", help="Speak your query instead of typing"),
     speak: bool = typer.Option(False, "--speak", help="Read top result aloud (macOS say)"),
 ):
@@ -40,6 +41,7 @@ def search(
         query, vector, k=k,
         type_filter=memory_type,
         repo_filter=repo,
+        speaker_filter=speaker,
     )
 
     # Recall intent: sort by timestamp descending

@@ -6,8 +6,12 @@ from rich.console import Console
 console = Console()
 
 
-def record_and_transcribe(duration: int = 8) -> tuple[str, float]:
-    """Record audio and transcribe via Whisper. Returns (text, avg_no_speech_prob).
+def record_and_transcribe(duration: int = 8) -> tuple[str, float, "np.ndarray"]:
+    """Record audio and transcribe via Whisper.
+
+    Returns (text, avg_no_speech_prob, audio_f32).
+    audio_f32 is the raw float32 waveform — callers can use it for speaker
+    verification without re-recording.
 
     Raises ImportError if voice extras are not installed.
     """
@@ -42,19 +46,60 @@ def record_and_transcribe(duration: int = 8) -> tuple[str, float]:
         sum(s.get("no_speech_prob", 0.0) for s in segments) / len(segments)
         if segments else 0.0
     )
-    return text, avg_no_speech
+    return text, avg_no_speech, audio_f32
+
+
+def _verify_speaker(audio_f32: "np.ndarray", sample_rate: int = 16000) -> bool:
+    """Return True if audio matches the enrolled speaker profile (or if unverifiable).
+
+    Returns True when:
+      - No profile is enrolled (no regression for unenrolled users).
+      - pyannote is not installed (graceful degradation).
+      - Embedding extraction fails for any reason.
+
+    Returns False only when a profile IS enrolled and the audio does NOT match.
+    """
+    from core.speaker_profile import load_profile, is_self
+
+    profile = load_profile()
+    if profile is None:
+        return True  # no profile enrolled — open access
+
+    try:
+        import torch
+        import numpy as np
+        from pyannote.audio import Model, Inference
+
+        model = Model.from_pretrained("pyannote/embedding", use_auth_token=True)
+        inference = Inference(model, window="whole")
+
+        waveform = torch.from_numpy(audio_f32).unsqueeze(0)
+        embedding = inference({"waveform": waveform, "sample_rate": sample_rate})
+        return is_self(embedding, profile, threshold=0.3)
+    except ImportError:
+        # pyannote not installed — warn but allow through
+        console.print("[dim yellow]Speaker verification skipped (pyannote not installed).[/dim yellow]")
+        return True
+    except Exception:
+        # Any other error (model download, GPU unavailable, etc.) — allow through
+        return True
 
 
 def transcribe_or_exit(duration: int = 8) -> str:
-    """Record, transcribe, validate, and return the query text.
+    """Record, transcribe, verify speaker, and return the query text.
 
     Prints errors and raises SystemExit on failure so callers don't need
     to repeat the validation boilerplate.
+
+    Speaker verification behaviour:
+      - Profile enrolled  → voice queries require your voice; rejected with a clear error.
+      - No profile        → voice queries work for anyone (no regression).
+      - pyannote missing  → verification skipped with a warning, query proceeds.
     """
     import typer
 
     try:
-        text, avg_no_speech = record_and_transcribe(duration=duration)
+        text, avg_no_speech, audio_f32 = record_and_transcribe(duration=duration)
     except ImportError:
         console.print("[red]Voice input requires voice extras: uv pip install -e '.[voice]'[/red]")
         raise typer.Exit(1)
@@ -65,6 +110,10 @@ def transcribe_or_exit(duration: int = 8) -> str:
 
     if len(text.split()) < 2:
         console.print("[yellow]Query too short. Try again.[/yellow]")
+        raise typer.Exit(1)
+
+    if not _verify_speaker(audio_f32):
+        console.print("[red]Speaker not recognised. Voice queries require your enrolled voice.[/red]")
         raise typer.Exit(1)
 
     return text

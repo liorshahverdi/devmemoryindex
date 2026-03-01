@@ -76,10 +76,10 @@ class VoiceConnector(Connector):
             return 0
 
         # Guard B — Speaker identity check (enrolled profile gate)
-        from core.speaker_profile import PROFILE_PATH, load_profile, is_self
+        from core.speaker_profile import load_profile, is_self
 
-        if PROFILE_PATH.exists():
-            profile = load_profile()
+        profile = load_profile()
+        if profile is not None:
             seg_emb = self._extract_speaker_embedding(wav_path)
             if seg_emb is not None and not is_self(seg_emb, profile, threshold=0.3):
                 mem_type = "voice_ambient"

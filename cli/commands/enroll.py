@@ -38,8 +38,12 @@ def enroll():
         wav.write(f.name, SAMPLE_RATE, audio)
         embedding = _extract_embedding(f.name)
 
-    save_profile(embedding)
-    console.print(f"[green]Voiceprint saved to {PROFILE_PATH}[/green]")
+    user_name = typer.prompt("Your name (used for speaker tagging in meeting transcripts)", default="").strip() or None
+    save_profile(embedding, user_name=user_name)
+    if user_name:
+        console.print(f"[green]Voiceprint saved to {PROFILE_PATH}[/green] (enrolled as [bold]{user_name}[/bold])")
+    else:
+        console.print(f"[green]Voiceprint saved to {PROFILE_PATH}[/green]")
     console.print("Run [bold]devmemory voice enroll[/bold] again any time to re-enroll.")
 
 

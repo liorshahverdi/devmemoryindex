@@ -200,6 +200,29 @@ def remove_meeting_dir(path: str) -> bool:
     return True
 
 
+# ── User identity helpers ─────────────────────────────────────────
+
+
+def get_user_name() -> str | None:
+    """Return the configured user name for speaker attribution (e.g. "Lasha")."""
+    return load().get("user", {}).get("name") or None
+
+
+def get_user_aliases() -> list[str]:
+    """Return the configured name aliases (e.g. ["L", "LS"]) for speaker matching."""
+    return load().get("user", {}).get("aliases", [])
+
+
+def set_user_identity(name: str, aliases: list[str] | None = None) -> None:
+    """Persist [user] name (and optional aliases) to config.toml."""
+    data = load()
+    user_section = data.setdefault("user", {})
+    user_section["name"] = name
+    if aliases is not None:
+        user_section["aliases"] = aliases
+    save(data)
+
+
 # ── API key helpers ───────────────────────────────────────────────
 
 

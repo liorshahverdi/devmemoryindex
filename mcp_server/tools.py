@@ -34,6 +34,7 @@ def search_memories(
     k: int = 5,
     memory_type: str | None = None,
     repo: str | None = None,
+    speaker: str | None = None,
 ) -> list[dict]:
     """Search developer memory for relevant past solutions, commits, notes, and commands.
 
@@ -49,6 +50,9 @@ def search_memories(
                        "agent_solution" — solutions persisted by Claude via remember_memory
                        "voice_note"     — dictated voice memories
         repo:        Optional filter by repository name (e.g. "devmemoryindex").
+        speaker:     Optional filter by speaker name (e.g. "Sarah" or "self").
+                     Matches memories tagged with "speaker:<name>" from meeting transcripts.
+                     Use "self" to find memories where you were the speaker.
 
     Returns:
         List of dicts with keys: summary, type, repo, importance, tags,
@@ -59,7 +63,12 @@ def search_memories(
     """
     store = get_store()
     vector = embed(query)
-    results = store.hybrid_search(query, vector, k=k, type_filter=memory_type, repo_filter=repo)
+    results = store.hybrid_search(
+        query, vector, k=k,
+        type_filter=memory_type,
+        repo_filter=repo,
+        speaker_filter=speaker,
+    )
     return [
         {
             "id": r["id"],

@@ -240,6 +240,7 @@ class MemoryStore:
         k: int = 5,
         type_filter: str | None = None,
         repo_filter: str | None = None,
+        speaker_filter: str | None = None,
     ) -> list:
         # Build optional WHERE clause applied at the DB level so filters
         # don't silently exclude results after the k-cap is already applied.
@@ -314,6 +315,16 @@ class MemoryStore:
         for r in keyword_results:
             if r["id"] not in combined:
                 combined[r["id"]] = r
+
+        # Speaker filter: applied after merge, before scoring.
+        # Matches memories with the tag "speaker:<speaker_filter_lowercase>".
+        if speaker_filter:
+            tag_to_find = f"speaker:{speaker_filter.lower()}"
+            combined = {
+                k: v for k, v in combined.items()
+                if tag_to_find in (v.get("tags") or [])
+            }
+
         for r in combined.values():
             if r["id"] in keyword_ids:
                 kw_dist = _term_match_distance(r)

@@ -1,23 +1,25 @@
 """
-Meeting Connector — indexes audio recordings of meetings/calls.
+Meeting Connector — indexes meetings from audio files or text transcripts.
 
-Scans configured directories for audio files, transcribes them locally using
-Whisper, and stores the transcript as a searchable memory. Speaker diarization
-(pyannote.audio) is used when available to prefix each segment with a speaker
-label; falls back to plain transcript if pyannote is not installed.
+Scans configured directories for:
+  - Audio files: transcribed locally using Whisper; speaker diarization (pyannote.audio)
+    is used when available to prefix each segment with a speaker label.
+  - Text files (.txt): parsed directly for named-speaker transcript formats produced by
+    Zoom, Teams, Google Meet, etc.  Lines matching "Name: text" or "Name [HH:MM]: text"
+    are recognised and all speaker names are stored as "speaker:<name>" tags.
 
 Memory fields:
   type        "meeting_transcript"
   summary     first 200 chars of transcript
-  raw_text    full transcript (possibly with "SPEAKER_N: ..." prefixes)
-  source      audio file path
+  raw_text    full transcript (possibly with "Name: ..." prefixes)
+  source      file path
   repo        None
   timestamp   file mtime
   importance  0.75
-  tags        ["meeting", "transcript"]
+  tags        ["meeting", "transcript", "speaker:<name>", ...]
 
-Requires: openai-whisper  (uv pip install "devmemoryindex[voice]")
-Optional: pyannote.audio  (uv pip install "devmemoryindex[voice]")
+Requires: openai-whisper  (uv pip install "devmemoryindex[voice]")  — audio only
+Optional: pyannote.audio  (uv pip install "devmemoryindex[voice]")  — audio diarization
 
 Configuration:
   devmemory config add-meetings ~/Recordings
@@ -25,15 +27,26 @@ Configuration:
 """
 
 import hashlib
+import re
 from datetime import datetime
 from pathlib import Path
 
 import core.config as cfg
 from connectors.base import Connector
+from core.embeddings import embed
 from core.schema import Memory
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".mp4", ".ogg", ".flac", ".webm", ".aac"}
+TEXT_EXTENSIONS = {".txt"}
 MAX_FILE_MB = 500  # skip files larger than 500 MB
+
+# Matches "Name: text" or "Name [HH:MM]: text" or "Name [HH:MM:SS]: text"
+# Name must start with a letter, max 40 chars, no colon in the name portion.
+_SPEAKER_LINE_RE = re.compile(
+    r"^(?P<name>[A-Za-z][A-Za-z0-9 \-\'\.]{0,39}?)"
+    r"(?:\s+\[[\d:]+\])?"
+    r":\s+(?P<text>.+)$"
+)
 
 
 class MeetingConnector(Connector):
@@ -44,6 +57,72 @@ class MeetingConnector(Connector):
         self.dirs = dirs or cfg.get_meeting_dirs()
 
     def collect(self) -> int:
+        if not self.dirs:
+            return 0
+
+        count = 0
+        for d in self.dirs:
+            root = Path(d).expanduser().resolve()
+            if not root.is_dir():
+                continue
+            for f in sorted(root.rglob("*")):
+                suffix = f.suffix.lower()
+                if suffix in TEXT_EXTENSIONS:
+                    if f.stat().st_size > MAX_FILE_MB * 1024 * 1024:
+                        continue
+                    try:
+                        count += self._index_text_file(f)
+                    except Exception as e:
+                        import warnings
+                        warnings.warn(f"Failed to index {f.name}: {e}")
+                elif suffix in AUDIO_EXTENSIONS:
+                    if f.stat().st_size > MAX_FILE_MB * 1024 * 1024:
+                        continue
+                    try:
+                        count += self._index_audio_file(f)
+                    except Exception as e:
+                        import warnings
+                        warnings.warn(f"Failed to index {f.name}: {e}")
+        return count
+
+    def _index_text_file(self, path: Path) -> int:
+        """Index a pre-transcribed text file (Zoom/Teams/Google Meet export)."""
+        mtime = datetime.fromtimestamp(path.stat().st_mtime)
+        mem_id = hashlib.sha256(
+            f"{path}|{path.stat().st_mtime}".encode()
+        ).hexdigest()
+
+        if self.store.exists(mem_id):
+            return 0
+
+        try:
+            raw = path.read_text(errors="replace").strip()
+        except Exception:
+            return 0
+
+        if len(raw) < 50:
+            return 0
+
+        transcript, speaker_tags = _parse_text_transcript(raw)
+        raw_text = self._redact(transcript[:5000])
+        summary = transcript[:200].replace("\n", " ")
+
+        memory = Memory(
+            id=mem_id,
+            type="meeting_transcript",
+            summary=summary,
+            raw_text=raw_text,
+            source=str(path),
+            repo=None,
+            timestamp=mtime,
+            tags=["meeting", "transcript"] + speaker_tags,
+            importance=0.75,
+        )
+        self.store.add(memory, embed(summary[:512]))
+        return 1
+
+    def _index_audio_file(self, path: Path) -> int:
+        """Transcribe an audio file with Whisper and index the result."""
         try:
             import whisper  # noqa: F401
         except ImportError:
@@ -56,27 +135,6 @@ class MeetingConnector(Connector):
                 "Install it with: brew install ffmpeg"
             )
 
-        if not self.dirs:
-            return 0
-
-        count = 0
-        for d in self.dirs:
-            root = Path(d).expanduser().resolve()
-            if not root.is_dir():
-                continue
-            for audio_file in sorted(root.rglob("*")):
-                if audio_file.suffix.lower() not in AUDIO_EXTENSIONS:
-                    continue
-                if audio_file.stat().st_size > MAX_FILE_MB * 1024 * 1024:
-                    continue
-                try:
-                    count += self._index_file(audio_file)
-                except Exception as e:
-                    import warnings
-                    warnings.warn(f"Failed to index {audio_file.name}: {e}")
-        return count
-
-    def _index_file(self, path: Path) -> int:
         mtime = datetime.fromtimestamp(path.stat().st_mtime)
         mem_id = hashlib.sha256(
             f"{path}|{path.stat().st_mtime}".encode()
@@ -92,7 +150,6 @@ class MeetingConnector(Connector):
         raw_text = self._redact(transcript[:5000])
         summary = transcript[:200].replace("\n", " ")
 
-        from core.embeddings import embed
         memory = Memory(
             id=mem_id,
             type="meeting_transcript",
@@ -109,6 +166,60 @@ class MeetingConnector(Connector):
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
+
+
+def _parse_text_transcript(raw: str) -> tuple[str, list[str]]:
+    """Parse a pre-transcribed text file and extract speaker tags.
+
+    Detects lines in the formats produced by Zoom/Teams/Google Meet:
+      "Name: text"
+      "Name [HH:MM]: text"
+      "Name [HH:MM:SS]: text"
+
+    Returns:
+        (transcript, speaker_tags) where speaker_tags is a list of
+        "speaker:<name_lowercase>" strings plus "speaker:self" when the
+        user's configured name or aliases appear.
+
+    Falls back to (raw, []) when no speaker lines are detected.
+    """
+    user_name = cfg.get_user_name()
+    user_aliases = cfg.get_user_aliases()
+
+    # Build a lowercase set of names/aliases that identify the user.
+    self_names: set[str] = set()
+    if user_name:
+        self_names.add(user_name.lower())
+    for alias in user_aliases:
+        self_names.add(alias.lower())
+
+    lines = raw.splitlines()
+    detected_speakers: set[str] = set()
+    speaker_lines_found = 0
+
+    for line in lines:
+        m = _SPEAKER_LINE_RE.match(line.strip())
+        if m:
+            speaker_lines_found += 1
+            detected_speakers.add(m.group("name").strip())
+
+    # Only apply speaker tagging if >30% of non-empty lines look like speaker lines
+    # (prevents over-eager matching on plain text files).
+    non_empty = sum(1 for l in lines if l.strip())
+    if non_empty == 0 or speaker_lines_found / non_empty < 0.3:
+        return raw, []
+
+    speaker_tags: list[str] = []
+    has_self = False
+    for name in detected_speakers:
+        name_lower = name.lower()
+        speaker_tags.append(f"speaker:{name_lower}")
+        if name_lower in self_names:
+            has_self = True
+    if has_self:
+        speaker_tags.append("speaker:self")
+
+    return raw, speaker_tags
 
 
 def _transcribe(path: Path) -> str:

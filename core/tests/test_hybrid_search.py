@@ -229,3 +229,76 @@ def test_keyword_only_hit_ranks_above_unrelated_semantic_hit(store):
     assert ids.index("kw-only") < ids.index("sem-only"), (
         "Keyword-exact match should rank above unrelated semantic hit"
     )
+
+
+# ── Speaker filter tests ──────────────────────────────────────────────
+
+def test_speaker_filter_returns_only_tagged_memories(store):
+    """Memories without speaker:alice tag should not appear when filtering by alice."""
+    alice_mem = _make_memory(
+        "alice-1", "JWT auth design discussion", tags=["meeting", "speaker:alice"]
+    )
+    bob_mem = _make_memory(
+        "bob-1", "Database migration plan", tags=["meeting", "speaker:bob"]
+    )
+    untagged = _make_memory("no-tag", "Unrelated background noise", tags=["meeting"])
+
+    vec = embed("JWT auth design")
+    for m in [alice_mem, bob_mem, untagged]:
+        store.add(m, vec)
+
+    results = store.hybrid_search("JWT auth", vec, k=10, speaker_filter="alice")
+    ids = [r["id"] for r in results]
+    assert "alice-1" in ids
+    assert "bob-1" not in ids
+    assert "no-tag" not in ids
+
+
+def test_speaker_filter_self_tag(store):
+    """speaker_filter='self' should match memories tagged with 'speaker:self'."""
+    self_mem = _make_memory(
+        "self-1", "I proposed using LanceDB for the memory layer",
+        tags=["meeting", "speaker:self", "speaker:lasha"],
+    )
+    other_mem = _make_memory(
+        "other-1", "Alice raised concerns about latency",
+        tags=["meeting", "speaker:alice"],
+    )
+    vec = embed("LanceDB memory layer")
+    store.add(self_mem, vec)
+    store.add(other_mem, vec)
+
+    results = store.hybrid_search("LanceDB", vec, k=10, speaker_filter="self")
+    ids = [r["id"] for r in results]
+    assert "self-1" in ids
+    assert "other-1" not in ids
+
+
+def test_speaker_filter_case_insensitive(store):
+    """speaker_filter should normalise to lowercase before matching."""
+    mem = _make_memory("sarah-1", "Sprint review notes", tags=["meeting", "speaker:sarah"])
+    store.add(mem, embed("sprint review"))
+
+    results = store.hybrid_search("sprint", embed("sprint"), k=10, speaker_filter="Sarah")
+    assert any(r["id"] == "sarah-1" for r in results)
+
+
+def test_speaker_filter_no_match_returns_empty(store):
+    """When no memories have the requested speaker tag, return an empty list."""
+    mem = _make_memory("x", "Random memory", tags=["agent"])
+    store.add(mem, embed("random"))
+    results = store.hybrid_search("random", embed("random"), k=10, speaker_filter="nobody")
+    assert results == []
+
+
+def test_no_speaker_filter_returns_all(store):
+    """Omitting speaker_filter should not restrict results."""
+    m1 = _make_memory("m1", "meeting notes alice", tags=["speaker:alice"])
+    m2 = _make_memory("m2", "meeting notes bob", tags=["speaker:bob"])
+    vec = embed("meeting notes")
+    store.add(m1, vec)
+    store.add(m2, vec)
+    results = store.hybrid_search("meeting notes", vec, k=10)
+    ids = [r["id"] for r in results]
+    assert "m1" in ids
+    assert "m2" in ids

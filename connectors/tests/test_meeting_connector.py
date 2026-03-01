@@ -15,7 +15,10 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from connectors.meeting_connector import MeetingConnector, MAX_FILE_MB, AUDIO_EXTENSIONS
+from connectors.meeting_connector import (
+    MeetingConnector, MAX_FILE_MB, AUDIO_EXTENSIONS,
+    TEXT_EXTENSIONS, _parse_text_transcript,
+)
 from core.memory_store import MemoryStore
 
 
@@ -25,8 +28,13 @@ def store(tmp_path):
 
 
 def _connector(store, dirs=None):
-    c = MeetingConnector(dirs=dirs or [])
+    """Create a connector with an explicit dirs list, bypassing system config."""
+    c = MeetingConnector.__new__(MeetingConnector)
+    # Call grandparent __init__ to set up self.store, then override
+    from connectors.base import Connector
+    Connector.__init__(c)
     c.store = store
+    c.dirs = dirs if dirs is not None else []
     return c
 
 
@@ -77,7 +85,7 @@ def test_large_file_skipped(store, tmp_path):
 def test_unsupported_extension_skipped(store, tmp_path):
     d = tmp_path / "recordings"
     d.mkdir()
-    _write_audio(d / "recording.txt")
+    _write_audio(d / "recording.pdf")  # .pdf is not a handled extension
     c = _connector(store, dirs=[str(d)])
 
     mock_whisper = MagicMock()
@@ -152,3 +160,126 @@ def test_audio_extensions_include_common():
     assert ".m4a" in AUDIO_EXTENSIONS
     assert ".mp4" in AUDIO_EXTENSIONS
     assert ".webm" in AUDIO_EXTENSIONS
+
+
+def test_text_extension_is_supported():
+    assert ".txt" in TEXT_EXTENSIONS
+
+
+# ── Text transcript parsing (_parse_text_transcript) ─────────────────────────
+
+def test_parse_speaker_lines_simple():
+    raw = "\n".join([
+        "Alice: Let's discuss the sprint goals.",
+        "Bob: Agreed, we should also review blockers.",
+        "Alice: The main blocker is the auth service.",
+    ])
+    transcript, tags = _parse_text_transcript(raw)
+    assert transcript == raw
+    assert "speaker:alice" in tags
+    assert "speaker:bob" in tags
+
+
+def test_parse_speaker_lines_with_timestamp():
+    raw = "\n".join([
+        "Alice [00:00]: Welcome everyone.",
+        "Bob [00:15]: Thanks for having me.",
+        "Carol [01:30]: Let me share my screen.",
+        "Alice [02:00]: Sure, go ahead.",
+    ])
+    _, tags = _parse_text_transcript(raw)
+    assert "speaker:alice" in tags
+    assert "speaker:bob" in tags
+    assert "speaker:carol" in tags
+
+
+def test_parse_self_speaker_detection():
+    raw = "\n".join([
+        "Lasha: We decided to use JWT for auth.",
+        "Alice: Makes sense, agreed.",
+        "Lasha: We'll revisit in the next sprint.",
+    ])
+    with patch("core.config.get_user_name", return_value="Lasha"), \
+         patch("core.config.get_user_aliases", return_value=[]):
+        _, tags = _parse_text_transcript(raw)
+    assert "speaker:lasha" in tags
+    assert "speaker:self" in tags
+    assert "speaker:alice" in tags
+
+
+def test_parse_no_speaker_format_returns_empty_tags():
+    raw = "This is just a plain text document with no speaker labels at all."
+    _, tags = _parse_text_transcript(raw)
+    assert tags == []
+
+
+def test_parse_mixed_lines_below_threshold():
+    # Only 1 of 5 lines looks like a speaker line → below 30% threshold
+    raw = "\n".join([
+        "Meeting notes from 2025-01-01",
+        "Topics covered:",
+        "Alice: One speaker line among many non-speaker lines.",
+        "  - Authentication design",
+        "  - Sprint planning",
+    ])
+    _, tags = _parse_text_transcript(raw)
+    assert tags == []
+
+
+# ── Text file indexing via collect() ─────────────────────────────────────────
+
+_FAKE_VECTOR = [0.0] * 384
+
+
+def test_text_transcript_indexed(store, tmp_path):
+    d = tmp_path / "transcripts"
+    d.mkdir()
+    transcript_content = "\n".join([
+        "Alice: We agreed to use LanceDB for the memory store.",
+        "Bob: The embedding model is BAAI/bge-small-en.",
+        "Alice: Good, let's proceed with that approach.",
+        "Bob: I'll update the schema and run migration.",
+    ])
+    (d / "standup.txt").write_text(transcript_content)
+    c = _connector(store, dirs=[str(d)])
+
+    with patch("core.config.get_user_name", return_value=None), \
+         patch("core.config.get_user_aliases", return_value=[]), \
+         patch("connectors.meeting_connector.embed", return_value=_FAKE_VECTOR):
+        count = c.collect()
+
+    assert count == 1
+    memories = store.get_all()
+    assert any(m["type"] == "meeting_transcript" for m in memories)
+    mem = next(m for m in memories if m["type"] == "meeting_transcript")
+    assert "speaker:alice" in mem["tags"]
+    assert "speaker:bob" in mem["tags"]
+
+
+def test_text_transcript_short_skipped(store, tmp_path):
+    d = tmp_path / "transcripts"
+    d.mkdir()
+    (d / "empty.txt").write_text("too short")
+    c = _connector(store, dirs=[str(d)])
+    assert c.collect() == 0
+
+
+def test_text_transcript_deduplication(store, tmp_path):
+    d = tmp_path / "transcripts"
+    d.mkdir()
+    text = "\n".join([
+        "Alice: We're testing deduplication logic here.",
+        "Bob: It should index once and skip on second run.",
+        "Alice: Exactly right, let's verify.",
+    ])
+    (d / "meeting.txt").write_text(text)
+    c = _connector(store, dirs=[str(d)])
+
+    with patch("core.config.get_user_name", return_value=None), \
+         patch("core.config.get_user_aliases", return_value=[]), \
+         patch("connectors.meeting_connector.embed", return_value=_FAKE_VECTOR):
+        first = c.collect()
+        second = c.collect()
+
+    assert first == 1
+    assert second == 0
