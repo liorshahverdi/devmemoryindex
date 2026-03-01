@@ -1,8 +1,13 @@
 METADATA_OVERHEAD = 20  # tokens for type/repo/importance labels per memory
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate (~1 token per whitespace-delimited word)."""
-    return len(text.split())
+    """Rough token estimate (~1 token per 4 characters).
+
+    The chars/4 heuristic is accurate to within ~20% for English prose and
+    code at GPT/Claude tokenizer rates. Word-count significantly underestimates
+    code (identifiers and punctuation each become separate tokens) by 2-3x.
+    """
+    return max(1, len(text) // 4)
 
 def pack_within_budget(
     memories: list[dict],

@@ -1,13 +1,17 @@
 """
 DevMemoryIndex MCP Server
 
-Exposes six tools to Claude Code (and any MCP-compatible agent) via stdio transport:
+Exposes ten tools to Claude Code (and any MCP-compatible agent) via stdio transport:
   - search_memories      — hybrid search over all indexed developer memories
   - build_context        — formatted context block for a given task/query
   - remember_memory      — persist a solution or decision for future sessions
   - get_memory           — fetch a single memory by ID (resolve related[] links)
   - get_session_context  — call once at session start to bootstrap context from task + git state
   - remember_failure     — record a failed approach to avoid repeating it in future sessions
+  - update_memory        — correct or improve an existing memory in-place
+  - reinforce_memory     — explicitly boost importance after successfully applying a solution
+  - get_codebase_map     — cluster file_content memories to reveal subsystem structure
+  - plan_task            — generate a grounded implementation plan from memory + git context
 
 Transport: stdio (spawned on-demand by Claude Code, no persistent process needed)
 
@@ -16,7 +20,7 @@ Registration (project-local):
 
 Config file: .mcp.json (project root) — used by Claude Code to auto-discover the server.
 
-Verify in Claude Code: run /mcp — devmemory should appear as connected with 6 tools.
+Verify in Claude Code: run /mcp — devmemory should appear as connected with 10 tools.
 
 Note: directory is named mcp_server/ (not mcp/) to avoid shadowing the mcp PyPI package.
 """
@@ -29,6 +33,10 @@ from mcp_server.tools import (
     get_memory,
     get_session_context,
     remember_failure,
+    update_memory,
+    reinforce_memory,
+    get_codebase_map,
+    plan_task,
 )
 
 mcp = FastMCP(
@@ -44,9 +52,14 @@ mcp = FastMCP(
     Use remember_failure after hitting a dead end — records what failed and why so
     future sessions don't repeat the same mistake.
     Use get_memory to resolve related memory IDs returned in search results.
+    Use update_memory to correct a wrong or outdated stored solution.
+    Use reinforce_memory after successfully applying a solution — boosts its importance.
+    Use get_codebase_map to get a structural overview of an unfamiliar or refactored repo.
+    Use plan_task to generate a grounded implementation plan before writing code.
 
     Search with specific technical terms for best results.
     Always call get_session_context or build_context before starting complex implementation tasks.
+    Check times_accessed in search_memories results: high access count = proven solution.
     """,
 )
 
@@ -56,6 +69,10 @@ mcp.tool()(remember_memory)
 mcp.tool()(get_memory)
 mcp.tool()(get_session_context)
 mcp.tool()(remember_failure)
+mcp.tool()(update_memory)
+mcp.tool()(reinforce_memory)
+mcp.tool()(get_codebase_map)
+mcp.tool()(plan_task)
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

@@ -171,11 +171,12 @@ class MemoryStore:
             return set()
 
     def exists(self, memory_id: str) -> bool:
+        safe_id = memory_id.replace("'", "''")
         try:
             results = (
                 self.collection
                 .search()
-                .where(f"id = '{memory_id}'")
+                .where(f"id = '{safe_id}'")
                 .limit(1)
                 .to_list()
             )
@@ -205,12 +206,17 @@ class MemoryStore:
             pass
 
     def reinforce(self, memory_id: str, boost: float = 0.05) -> None:
-        """Boost importance of a retrieved memory (cap at 1.0). Called after search hits."""
+        """Passively boost importance of a retrieved memory, capped at 0.8.
+
+        Called automatically after search hits and get_by_id(). Not intended
+        for explicit agent feedback — use boost_importance() for that (cap 0.95).
+        """
+        safe_id = memory_id.replace("'", "''")
         try:
             results = (
                 self.collection
                 .search()
-                .where(f"id = '{memory_id}'")
+                .where(f"id = '{safe_id}'")
                 .limit(1)
                 .to_list()
             )
@@ -218,7 +224,7 @@ class MemoryStore:
                 return
             new_importance = min(0.8, results[0].get("importance", 0.5) + boost)
             self.collection.update(
-                where=f"id = '{memory_id}'",
+                where=f"id = '{safe_id}'",
                 values={"importance": new_importance},
             )
         except Exception:
@@ -384,8 +390,83 @@ class MemoryStore:
         except Exception:
             return None
 
+    def update(
+        self,
+        memory_id: str,
+        summary: str | None = None,
+        raw_text: str | None = None,
+        importance: float | None = None,
+    ) -> bool:
+        """Update an existing memory's fields in-place.
+
+        Re-embeds and replaces the vector when summary or raw_text changes
+        (requires delete + re-add). Preserves times_retrieved and times_accessed.
+        Returns False if memory_id is not found.
+        """
+        record = self.get_by_id(memory_id, reinforce=False)
+        if record is None:
+            return False
+
+        new_summary = (summary.strip()[:200] if summary else record.get("summary", ""))
+        new_raw = raw_text if raw_text is not None else record.get("raw_text", "")
+        new_importance = importance if importance is not None else record.get("importance", 0.5)
+        text_changed = summary is not None or raw_text is not None
+
+        if text_changed:
+            from core.embeddings import embed
+            new_vector = embed(new_summary)
+            self.delete(memory_id)
+            self.collection.add([{
+                "id": memory_id,
+                "type": record.get("type", "agent_solution"),
+                "summary": new_summary,
+                "raw_text": new_raw,
+                "source": record.get("source", "mcp_agent"),
+                "repo": record.get("repo"),
+                "timestamp": record.get("timestamp"),
+                "tags": record.get("tags", []),
+                "importance": new_importance,
+                "vector": new_vector,
+                "times_retrieved": record.get("times_retrieved", 0) or 0,
+                "times_accessed": record.get("times_accessed", 0) or 0,
+            }])
+        else:
+            self.collection.update(
+                where=f"id = '{memory_id}'",
+                values={"importance": new_importance},
+            )
+
+        _context_cache.invalidate()
+        return True
+
+    def boost_importance(self, memory_id: str, amount: float = 0.05, cap: float = 0.95) -> float | None:
+        """Explicitly boost importance by amount up to cap.
+
+        Returns new importance value, or None if memory_id is not found.
+        """
+        try:
+            safe_id = memory_id.replace("'", "''")
+            results = (
+                self.collection
+                .search()
+                .where(f"id = '{safe_id}'")
+                .limit(1)
+                .to_list()
+            )
+            if not results:
+                return None
+            new_val = min(cap, (results[0].get("importance") or 0.5) + amount)
+            self.collection.update(
+                where=f"id = '{safe_id}'",
+                values={"importance": new_val},
+            )
+            return new_val
+        except Exception:
+            return None
+
     def delete(self, memory_id: str):
-        self.collection.delete(f"id = '{memory_id}'")
+        safe_id = memory_id.replace("'", "''")
+        self.collection.delete(f"id = '{safe_id}'")
 
     def summary_quality(self) -> dict:
         """Return summary length distribution and IDs of short-summary memories.

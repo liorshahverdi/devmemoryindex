@@ -36,9 +36,9 @@ class TerminalConnector(Connector):
 
         # Walk in reverse, collect last 500 unique meaningful commands
         seen = set()
-        commands = []
+        commands: list[tuple[str, datetime | None]] = []
         for line in reversed(lines):
-            cmd = self._parse_line(line)
+            cmd, ts = self._parse_line(line)
             if not cmd:
                 continue
             if len(cmd) < self.MIN_CMD_LENGTH:
@@ -47,11 +47,11 @@ class TerminalConnector(Connector):
                 continue
             if cmd not in seen:
                 seen.add(cmd)
-                commands.append(cmd)
+                commands.append((cmd, ts))
             if len(commands) >= 500:
                 break
 
-        for cmd in commands:
+        for cmd, ts in commands:
             mem_id = hashlib.sha256(cmd.encode()).hexdigest()
             if self.store.exists(mem_id):
                 continue
@@ -63,7 +63,7 @@ class TerminalConnector(Connector):
                 raw_text=cmd,
                 source=str(path),
                 repo=None,
-                timestamp=datetime.utcnow(),
+                timestamp=ts or datetime.utcnow(),
                 tags=["terminal"],
                 importance=self._estimate_importance(cmd),
             )
@@ -73,13 +73,21 @@ class TerminalConnector(Connector):
 
         return count
 
-    def _parse_line(self, line: str) -> str | None:
-        """Handle both plain history and zsh extended format (': timestamp:0;command')."""
+    def _parse_line(self, line: str) -> tuple[str, datetime | None]:
+        """Handle both plain history and zsh extended format (': timestamp:0;command').
+
+        Returns (command, timestamp_or_None). Bash history has no timestamps,
+        so timestamp is None for plain lines. Zsh extended format includes a
+        unix timestamp which is parsed and returned as a UTC datetime.
+        """
         line = line.strip()
-        match = re.match(r'^:\s*\d+:\d+;(.+)$', line)
+        match = re.match(r'^:\s*(\d+):\d+;(.+)$', line)
         if match:
-            return match.group(1).strip()
-        return line if line else None
+            unix_ts = int(match.group(1))
+            cmd = match.group(2).strip()
+            ts = datetime.utcfromtimestamp(unix_ts)
+            return cmd, ts
+        return (line if line else ""), None
 
     def _estimate_importance(self, cmd: str) -> float:
         c = cmd.lower()

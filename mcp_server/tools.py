@@ -12,6 +12,10 @@ Tool summary:
   get_memory           — fetch a single memory by ID (use to resolve related[] from search results)
   get_session_context  — call once at session start to bootstrap context from task + git state
   remember_failure     — record a failed approach so future sessions don't repeat the same mistake
+  update_memory        — correct or improve an existing memory in-place
+  reinforce_memory     — explicitly boost importance after successfully applying a solution
+  get_codebase_map     — cluster file_content memories to reveal subsystem structure
+  plan_task            — generate a grounded implementation plan from memory + git context
 """
 
 import hashlib
@@ -47,7 +51,11 @@ def search_memories(
         repo:        Optional filter by repository name (e.g. "devmemoryindex").
 
     Returns:
-        List of dicts with keys: summary, type, repo, importance, tags.
+        List of dicts with keys: summary, type, repo, importance, tags,
+        times_retrieved, times_accessed, related.
+        times_retrieved = how many times this memory appeared in search results.
+        times_accessed  = how many times get_memory was called on it (explicit reads).
+        High times_accessed relative to times_retrieved = proven, high-signal solution.
     """
     store = get_store()
     vector = embed(query)
@@ -61,6 +69,8 @@ def search_memories(
             "importance": r.get("importance"),
             "tags": r.get("tags", []),
             "related": r.get("related", []),
+            "times_retrieved": r.get("times_retrieved", 0) or 0,
+            "times_accessed": r.get("times_accessed", 0) or 0,
         }
         for r in results
     ]
@@ -292,6 +302,137 @@ def get_session_context(
     engine = ContextEngine(store)
     result = engine.build(query=enriched_query, repo=repo, max_tokens=3000, format="claude")
     return result["context_text"]
+
+
+def update_memory(
+    memory_id: str,
+    summary: str | None = None,
+    raw_text: str | None = None,
+    importance: float | None = None,
+) -> dict:
+    """Correct or improve an existing memory in-place.
+
+    Use this when a stored solution turns out to be wrong, incomplete, or outdated.
+    Prevents knowledge rot — bad memories at importance=0.9 stay bad without correction.
+
+    Providing a new summary or raw_text triggers re-embedding so the memory is
+    searchable by the updated content. Counters (times_retrieved, times_accessed)
+    are preserved. The memory ID stays the same.
+
+    Args:
+        memory_id:  Exact ID of the memory to update (from search_memories or get_memory).
+        summary:    New one-sentence description (max 200 chars). Pass None to keep existing.
+        raw_text:   New full detail text. Pass None to keep existing.
+        importance: New importance float 0.0–1.0. Pass None to keep existing.
+
+    Returns:
+        {"status": "ok", "id": "..."} on success.
+        {"status": "not_found"} if memory_id does not exist.
+    """
+    store = get_store()
+    ok = store.update(memory_id, summary=summary, raw_text=raw_text, importance=importance)
+    if not ok:
+        return {"status": "not_found"}
+    return {"status": "ok", "id": memory_id}
+
+
+def reinforce_memory(memory_id: str) -> dict:
+    """Explicitly boost importance of a memory after successfully applying it.
+
+    Call this when a retrieved solution or pattern was applied and worked.
+    Boosts importance by +0.05 (capped at 0.95), making the memory rank higher
+    in future searches. This is the explicit success feedback loop — use it to
+    mark proven solutions so they surface ahead of untested ones.
+
+    Args:
+        memory_id: Exact ID of the memory to reinforce (from search_memories results).
+
+    Returns:
+        {"status": "ok", "id": "...", "new_importance": float} on success.
+        {"status": "not_found"} if memory_id does not exist.
+    """
+    store = get_store()
+    new_importance = store.boost_importance(memory_id, amount=0.05, cap=0.95)
+    if new_importance is None:
+        return {"status": "not_found"}
+    return {"status": "ok", "id": memory_id, "new_importance": new_importance}
+
+
+def get_codebase_map(
+    repo: str | None = None,
+    n_clusters: int = 8,
+) -> dict:
+    """Cluster indexed file_content memories to reveal the codebase's subsystem structure.
+
+    Uses KMeans over stored embedding vectors to group files by semantic similarity.
+    Each cluster gets a label (most common path prefix) and a representative file.
+    Use this at the start of a session on an unfamiliar or recently-refactored repo
+    to get a structural overview before searching for specific things.
+
+    Requires scikit-learn: uv add 'devmemoryindex[ml]'
+
+    Args:
+        repo:       Optional repo name to restrict the map to a single project.
+        n_clusters: Target number of clusters (adjusted down if fewer files exist).
+
+    Returns:
+        dict with:
+          - "clusters": list of {label, size, representative, files[]}
+          - "total_files": number of file_content memories clustered
+          - "error": present only when clustering is not possible (too few files, missing dep)
+    """
+    from core.codebase_map import build_codebase_map
+    store = get_store()
+    return build_codebase_map(store, repo=repo, n_clusters=n_clusters)
+
+
+def plan_task(
+    description: str,
+    repo: str | None = None,
+    files: list[str] | None = None,
+) -> dict:
+    """Generate a grounded implementation plan backed by memory + current git state.
+
+    Combines relevant past solutions from the memory index with the current git diff
+    and recent commits, then calls the configured local LLM (Ollama by default) to
+    produce a numbered step-by-step plan. Use this before writing any code on a
+    non-trivial task to avoid repeating past mistakes and leverage prior art.
+
+    Requires Ollama running locally (or configured LLM backend).
+
+    Args:
+        description: Plain-language description of the task to plan.
+        repo:        Optional repo filter for memory retrieval.
+        files:       Optional list of file paths you're about to edit — enriches
+                     the memory search with import keywords and path signals.
+
+    Returns:
+        dict with:
+          - "plan": the generated implementation plan (markdown string)
+          - "memory_count": number of memories used as context
+          - "error": present only if the LLM backend failed
+    """
+    from core.store_provider import get_store as _get_store
+    from core.context_engine import ContextEngine
+    from core.plan_engine import plan_task as _plan, get_git_context
+
+    store = _get_store()
+    engine = ContextEngine(store)
+
+    file_signals = _file_signals(files) if files else ""
+    enriched_query = f"{description} {file_signals}".strip()
+    context_result = engine.build(query=enriched_query, repo=repo, max_tokens=2000, format="raw")
+    memory_context = context_result["context_text"]
+    memory_count = context_result.get("memory_count", 0)
+
+    git_context = get_git_context()
+
+    try:
+        plan_text = _plan(description, memory_context, git_context, files)
+    except Exception as e:
+        return {"plan": "", "memory_count": memory_count, "error": str(e)}
+
+    return {"plan": plan_text, "memory_count": memory_count}
 
 
 def remember_failure(

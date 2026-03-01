@@ -42,6 +42,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
+    # allow_origins=["*"] is intentional: this server is local-only (127.0.0.1).
+    # If ever exposed externally, restrict this to the allowed frontend origin.
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],

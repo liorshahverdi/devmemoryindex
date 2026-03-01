@@ -16,9 +16,14 @@ DOES NOT:
 from core.memory_store import MemoryStore
 from core.embeddings import embed
 from core.token_budget import pack_within_budget
+import logging
 try:
     from core.ml_intent_classifier import classify_intent_ml as classify_intent
 except ImportError:
+    logging.debug(
+        "core.ml_intent_classifier not available (install devmemory[ml]); "
+        "falling back to rule-based intent classifier"
+    )
     from core.intent_classifier import classify_intent
 from core.ranking import recency_score
 from core.context_cache import cache as _cache

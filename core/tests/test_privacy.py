@@ -48,6 +48,45 @@ def test_clean_text_is_unchanged():
     assert redact(clean) == clean
 
 
+def test_git_hashes_are_not_redacted():
+    """SHA1 (40 hex chars) and SHA256 (64 hex chars) must not be redacted.
+
+    The old base64 pattern [A-Za-z0-9+/]{40,} matched all hex strings,
+    silently corrupting git commit references and memory IDs stored in raw_text.
+    """
+    sha1 = "a" * 40          # 40 hex chars — git commit hash
+    sha256 = "b" * 64        # 64 hex chars — memory ID
+    for digest in (sha1, sha256):
+        result = redact(digest)
+        assert result == digest, f"Hex digest should not be redacted: {digest!r}"
+
+    # A line containing a git hash reference must survive intact
+    line = f"Fixed by commit {sha1}"
+    assert redact(line) == line
+
+
+def test_real_base64_with_padding_is_redacted():
+    """Padded base64 (ends with = or ==) must still be caught.
+
+    Uses a hardcoded value that contains + and / and ends with == so it
+    unambiguously looks like encoded binary data, not a hex digest.
+    """
+    # 45 bytes encodes to 60 base64 chars with no padding; use 46 bytes → 2 = chars
+    import base64
+    payload = base64.b64encode(bytes(range(46))).decode()
+    assert payload.endswith("="), f"Expected padding in: {payload!r}"
+    result = redact(payload)
+    assert "[REDACTED]" in result, f"Padded base64 was not redacted: {payload!r}"
+
+
+def test_jwt_is_redacted():
+    """JWTs (eyXXX.XXX.XXX) must be caught by the JWT-specific pattern."""
+    jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    result = redact(jwt)
+    assert "[REDACTED]" in result
+    assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in result
+
+
 def test_redaction_applied_end_to_end(tmp_path):
     """
     When a memory is built with a raw_text containing a secret and redact()

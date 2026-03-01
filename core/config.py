@@ -23,10 +23,12 @@ Example:
     markdown = 1800
 """
 
+import fcntl
 import tomllib
 from pathlib import Path
 
 CONFIG_PATH = Path.home() / ".config" / "devmemory" / "config.toml"
+_LOCK_PATH = CONFIG_PATH.parent / ".config.lock"
 
 
 def load() -> dict:
@@ -37,24 +39,41 @@ def load() -> dict:
 
 
 def save(data: dict) -> None:
+    """Write config atomically under an exclusive file lock.
+
+    Using fcntl.flock() ensures that concurrent CLI invocations (e.g., a daemon
+    connector firing while the user runs `devmemory config add-code`) don't
+    overwrite each other's changes.
+    """
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(_to_toml(data))
+    _LOCK_PATH.touch(exist_ok=True)
+    with open(_LOCK_PATH, "r") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            CONFIG_PATH.write_text(_to_toml(data))
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
 
 
 def _to_toml(data: dict) -> str:
-    """Minimal TOML serializer for string/int/list-of-strings structures."""
+    """Minimal TOML serializer for string/int/float/bool/list-of-strings structures."""
     lines = []
     for section, values in data.items():
         lines.append(f"[{section}]")
         for key, val in values.items():
-            if isinstance(val, list):
+            if isinstance(val, bool):
+                # bool must be checked before int — bool is a subclass of int
+                lines.append(f"{key} = {'true' if val else 'false'}")
+            elif isinstance(val, int):
+                lines.append(f"{key} = {val}")
+            elif isinstance(val, float):
+                lines.append(f"{key} = {val}")
+            elif isinstance(val, list):
                 if not val:
                     lines.append(f"{key} = []")
                 else:
                     items = "\n".join(f'    "{v}",' for v in val)
                     lines.append(f"{key} = [\n{items}\n]")
-            elif isinstance(val, int):
-                lines.append(f"{key} = {val}")
             else:
                 lines.append(f'{key} = "{val}"')
         lines.append("")

@@ -14,7 +14,7 @@
 |---|---|---|
 | `core/schema.py` — Memory dataclass | **Done** | id, type, summary, raw_text, source, repo, timestamp, tags, importance |
 | `core/embeddings.py` — BAAI/bge-small-en (384d) | **Done** | `embed()` and `embed_batch()` working |
-| `core/memory_store.py` — MemoryStore class | **Done** | `add()`, `semantic_search()`, `hybrid_search()`, `delete()`, `count()`, `get_all()`, `exists()`, `reinforce()`, `truncate()`. Uses `compute_score` from ranking module. `reinforce()` capped at 0.8 (not 1.0), boost=0.02. Keyword search extended to `raw_text` OR `summary`. Reinforce gated on similarity >= 0.7. |
+| `core/memory_store.py` — MemoryStore class | **Done** | `add()`, `semantic_search()`, `hybrid_search()`, `delete()`, `count()`, `get_all()`, `exists()`, `reinforce()`, `truncate()`, `update()`, `boost_importance()`. Uses `compute_score` from ranking module. `reinforce()` capped at 0.8 (passive), `boost_importance()` capped at 0.95 (explicit agent feedback). `update()` does delete+re-add with fresh embedding when text changes, preserving `times_retrieved`/`times_accessed` counters. |
 | `core/store_provider.py` — Singleton factory | **Done** | `get_store()` returns shared `MemoryStore` instance |
 | `core/ranking.py` — Scoring formula | **Done** | `recency_score()`, `compute_score()` — weights: similarity 0.75, importance 0.15, recency 0.10 (revised: semantic similarity given more weight to prevent high-importance unrelated results dominating) |
 | `core/privacy.py` — Redaction filter | **Done** | `redact()` — strips API keys, bearer tokens, base64 blobs, SSNs, emails. Hooked into `connectors/base.py` via `_redact()`. |
@@ -27,7 +27,7 @@
 | `core/tests/test_memory_store.py` | **Done** | 3 tests — all passing. |
 | `core/tests/test_ranking.py` | **Done** | 11 tests — recency decay, score formula, ranking order. All passing. |
 | `core/tests/test_hybrid_search.py` | **Done** | 5 tests — keyword surfacing, deduplication, hybrid-vs-semantic, importance ranking, k limit. All passing. |
-| `cli/main.py` — Typer entrypoint | **Done** | 17 commands/sub-apps registered: `search`, `add`, `stats`, `prune`, `dictate`, `voice`, `context`, `suggest`, `daemon`, `export`, `import`, `repl`, `ingest`, `config`, `serve`, `log`, `get`, `api-key`. |
+| `cli/main.py` — Typer entrypoint | **Done** | 19 commands/sub-apps registered: `search`, `add`, `stats`, `prune`, `dictate`, `voice`, `context`, `suggest`, `daemon`, `export`, `import`, `repl`, `ingest`, `config`, `serve`, `log`, `get`, `api-key`, `map`, `plan`. `map` and `plan` registered inside `try/except ImportError` blocks. |
 | `cli/commands/search.py` | **Done** | `hybrid_search()`, `--type`/`--repo` filters, `--voice` (3s countdown + 8s record + quality gate), `--speak` flag. |
 | `cli/commands/context.py` | **Done** | `devmemory context` — wraps `ContextEngine`, supports `--format raw/markdown/claude`, `--json`, `--copy`, `--repo`, `--tokens`. |
 | `cli/commands/suggest.py` | **Done** | `devmemory suggest` — `git diff HEAD` → `ContextEngine` → print context. Falls back to `git log -5`. No query required. |
@@ -54,8 +54,15 @@
 | `core/context_cache.py` | **Done** | Phase 5.B. Module-level LRU cache (50 entries, 5-min TTL) for `ContextEngine.build()`. Keyed on `sha256(query\|repo\|format\|intent)`. Auto-invalidated via `store.add()`. Context response includes `cached: true/false`. |
 | `daemon/jobs/dedup.py` | **Done** | Phase 5.C. Groups memories by `summary[:100].lower()`, keeps highest-importance duplicate, deletes the rest. Runs weekly (Mondays) in daemon scheduler. |
 | `core/memory_store.py` — get_by_id | **Done** | `get_by_id(memory_id)` — fetch a single memory by exact ID. Used to resolve `related[]` links from search results. |
-| `mcp_server/server.py` | **Done** | FastMCP entrypoint, stdio transport, registered with Claude Code via `claude mcp add`. 4 tools. |
-| `mcp_server/tools.py` | **Done** | `search_memories` (now uses DB-level type/repo filters, returns `id` + `related[]`), `build_context`, `remember_memory`, `get_memory` (resolves related IDs). |
+| `mcp_server/server.py` | **Done** | FastMCP entrypoint, stdio transport, registered with Claude Code via `claude mcp add`. **10 tools.** Instructions updated to guide agents on when to use each tool. |
+| `mcp_server/tools.py` | **Done** | `search_memories` (DB-level type/repo filters, returns `id`, `related[]`, `times_retrieved`, `times_accessed`), `build_context`, `remember_memory`, `get_memory`, `get_session_context`, `remember_failure`, `update_memory`, `reinforce_memory`, `get_codebase_map`, `plan_task`. |
+| `mcp_server/tools.py` — engagement fields | **Done** | `search_memories` now returns `times_retrieved` and `times_accessed` per result. Agents can trust solutions with high `times_accessed` relative to `times_retrieved` as proven patterns. |
+| `mcp_server/tools.py` — `update_memory` | **Done** | Corrects or improves a stored memory in-place. Re-embeds when text changes (delete+re-add, preserving counters). Prevents knowledge rot from wrong solutions at high importance. |
+| `mcp_server/tools.py` — `reinforce_memory` | **Done** | Explicitly boosts importance +0.05 (cap 0.95) after agent successfully applies a solution. Explicit success feedback loop distinct from passive `reinforce()` (cap 0.8). |
+| `core/codebase_map.py` | **Done** | Phase 7.8. `build_codebase_map(store, repo, n_clusters)` — KMeans over `file_content` vectors, labels clusters by first path component of summary (e.g. `core/foo.py` → `core`). Graceful import guards for numpy + scikit-learn. |
+| `core/plan_engine.py` | **Done** | Phase 7.9. `get_git_context()` (recent commits + diff stat) + `plan_task(description, memory_context, git_context, files)` — prompts configured LLM backend with task + past memories + git state; raises `RuntimeError` on backend failure. |
+| `cli/commands/map_cmd.py` | **Done** | Phase 7.8. `devmemory map [--repo] [--clusters K] [--verbose]` — Rich table of cluster labels, sizes, representative file. |
+| `cli/commands/plan_cmd.py` | **Done** | Phase 7.9. `devmemory plan <description> [--repo] [--file F] [--save]` — generates plan via LLM, renders as Rich Markdown, optionally saves as `agent_solution`. |
 | `api/routes/memory.py` — GET /{id} | **Done** | `GET /memory/{memory_id}` — fetch single memory by ID, 404 if not found. |
 | `scripts/reset_importance.py` | **Done** | Clamps drifted importance values back to 0.8. `--dry-run` supported. |
 | `daemon/scheduler.py` | **Done** | Per-connector schedule loop. Each connector fires independently when `now - last_run >= configured_interval`. Polls every 60 s. Logs to file via `daemon_log`. Trims log daily. Prunes daily, deduplicates weekly. |
@@ -102,8 +109,9 @@
 - `api/auth.py` — optional API key auth done ✅
 
 **What's next:**
-1. **Phase 7.8** — Codebase Map Generation (`devmemory map`, KMeans on stored vectors)
-2. **Phase 7.9** — Agent Mode (`devmemory plan`, git diff + memories + LLM)
+1. **Phase 7.5** — VSCode Extension (TypeScript, talks to REST API)
+2. **Phase 7.6** — Web UI (Svelte SPA, 5 tabs, streaming RAG)
+3. **Agent workflow gaps (lower priority):** `ask_memory()` MCP RAG tool (inline synthesized answer without CLI)
 
 ---
 
@@ -3863,7 +3871,7 @@ Repo-scoped search was built as part of Phase 4B / hybrid_search. The `repo` fie
 
 > These are longer-term enhancements for when DevMemoryIndex has active users.
 
-**Recommended implementation order: ~~7.3~~ → ~~7.4~~ → ~~7.7~~ → ~~7.1~~ → ~~7.2~~ → 7.8 → 7.9 → 7.5 → 7.6**
+**Recommended implementation order: ~~7.3~~ → ~~7.4~~ → ~~7.7~~ → ~~7.1~~ → ~~7.2~~ → ~~7.8~~ → ~~7.9~~ → 7.5 → 7.6**
 
 **Dependency graph:**
 ```
@@ -4044,44 +4052,50 @@ Drop-in ML upgrade for `core/intent_classifier.py`. `SGDClassifier` on TF-IDF fe
 
 ---
 
-### 7.8 Codebase Map Generation
+### 7.8 Codebase Map Generation ✅
 
-`devmemory map` clusters `git_diff` memories by their stored 384-dim vectors (no re-embedding), builds a weighted adjacency graph (edges = commits touching both clusters), outputs ASCII + JSON.
+**Status: COMPLETED**
 
-**New files:**
-- `core/codebase_map.py` — `generate_map(store, min_cluster_size=3, n_clusters=None, output_format="json") -> dict`. Uses `store.get_all()` — reads stored vectors directly from LanceDB (key efficiency win, zero re-embedding). `_auto_cluster_count()` maximises silhouette score over k=3..15. `KMeans` on L2-normalised vectors. `_dominant_prefix()` labels cluster by most common `Path(f).parts[0]`. `_build_edges()` weights = commits touching files in both clusters (filters weight < 2). `_render_ascii()` adjacency list with `↔` arrows
-- `cli/commands/map_cmd.py` — `devmemory map [--output json|ascii|both] [--min-cluster N] [--clusters K] [--save PATH]`
+`devmemory map` clusters `file_content` memories by their stored 384-dim vectors (no re-embedding needed — reads vectors directly from LanceDB), labels each cluster by the first directory component extracted from the summary path, and prints a Rich table.
 
-**Modified files:** `cli/main.py` (register `map` inside `try/except ImportError` for `[ml]`). Reuses `[ml]` extra from 7.7 — no additional deps.
+**Deviation from original spec:** Uses `file_content` memories (more numerous and stable) rather than `git_diff` memories. Labels extracted from summary field (format: `"core/foo.py (lines 1-80)"`) not source field, which avoids OS-level path prefix noise (`/Users/<name>/...`). No adjacency graph in initial implementation — focused on cluster labels + representative files.
+
+**Implemented:**
+- `core/codebase_map.py` — `build_codebase_map(store, repo, n_clusters)`. KMeans with `n_init=10`, `random_state=42`. `_cluster_label()` uses regex to extract first path component from summary; falls back to source-field parsing (skipping `Users/home/projects`), then first word of summary. Graceful `ImportError` guards for numpy + scikit-learn.
+- `cli/commands/map_cmd.py` — `devmemory map [--repo] [--clusters K] [--verbose]`. Rich table of label, size, representative file. `--verbose` lists all files per cluster.
+- MCP tool `get_codebase_map(repo, n_clusters)` in `mcp_server/tools.py`.
+
+**Modified files:** `cli/main.py`, `mcp_server/tools.py`, `mcp_server/server.py`
 
 **Verify:**
 ```bash
-devmemory ingest --source diff  # 7.4 needed for git_diff memories
-devmemory map --output ascii
-devmemory map --output json --save map.json
+devmemory map --repo devmemoryindex
+devmemory map --clusters 10 --verbose
 ```
 
 ---
 
-### 7.9 Agent Mode (`devmemory plan`)
+### 7.9 Agent Mode (`devmemory plan`) ✅
 
-`devmemory plan "add websocket multiplayer"` → `git diff HEAD` + relevant memories + LLM → streamed numbered implementation plan, saved as memory.
+**Status: COMPLETED**
 
-**Hard dependency: Phase 7.1 must be implemented first.**
+`devmemory plan "add websocket multiplayer"` → relevant memories + git diff stat + recent commits → LLM → numbered implementation plan, optionally saved as memory.
 
-**New files:**
-- `core/plan_engine.py` — `PlanEngine(store, backend)`: `generate_plan(task, repo_path=".", repo, include_diff=True, max_context_tokens=3500, stream=True) -> (plan_str, metadata_dict)`. Step 1: `git diff HEAD` via subprocess truncated to 2000 chars (same pattern as `cli/commands/suggest.py`). Step 2: `ContextEngine.build(intent="implementation")`. Step 3: `_build_plan_prompt()` = system prompt + diff section + memory section + "Plan:". Step 4: `backend.complete()`. Returns `(plan_text, {memories_used, diff_lines, tokens_estimated})`
-- `cli/commands/plan.py` — `plan(task, repo, no_diff, save, stream)`. Renders with Rich `Markdown`. Saves via `RAGEngine.save_answer()` from 7.2.
+**Deviation from original spec:** Plan engine is function-based (`plan_task()`, `get_git_context()`) rather than a `PlanEngine` class. Uses `git diff --stat` (not `git diff HEAD` full patch) to keep context compact. No streaming — collects full response then renders. `--save` stores as `agent_solution` via `remember_memory()` rather than `RAGEngine.save_answer()`.
 
-**Modified files:** `cli/main.py` (register inside `try/except ImportError` for `[llm]`)
+**Implemented:**
+- `core/plan_engine.py` — `get_git_context()` (recent 5 commits + diff stat). `plan_task(description, memory_context, git_context, files)` prompts via `backend.generate(stream=False)`; raises `RuntimeError` on backend failure. Structured prompt: task → file list → past context → git state → "Plan:" instruction.
+- `cli/commands/plan_cmd.py` — `devmemory plan <description> [--repo] [--file F] [--save]`. Enriches query with `_file_signals()` from tools.py. Renders with Rich `Markdown`. `--save` flag stores result.
+- MCP tool `plan_task(description, repo, files)` in `mcp_server/tools.py` — returns `{"plan": str, "memory_count": int}` or `{"error": str}`.
 
-**Reuses:** `LLMBackend`/`get_backend()`/`get_llm_config()` (7.1), `ContextEngine.build()`, `RAGEngine.save_answer()` (7.2), git diff subprocess from `cli/commands/suggest.py`
+**Modified files:** `cli/main.py`, `mcp_server/tools.py`, `mcp_server/server.py`
+
+**Reuses:** `get_backend()` (7.1), `ContextEngine.build()`, `_file_signals()` from `mcp_server/tools.py`
 
 **Verify:**
 ```bash
 devmemory plan "add rate limiting to the API"
-# Streamed numbered plan referencing past memories + git diff context
-devmemory search "rate limiting" --type agent_solution  # plan saved
+devmemory plan "fix hybrid search scoring" --repo devmemoryindex --save
 ```
 
 ---
@@ -4097,8 +4111,8 @@ devmemory search "rate limiting" --type agent_solution  # plan saved
 | 7.5 | `vscode-extension/src/*.ts`, `package.json` | — | TypeScript only | Phase 4B |
 | 7.6 | `ui/src/**`, `api/routes/{ask,stats,timeline}.py` | `api/server.py`, `pyproject.toml` | `[ui]` (aiofiles) | Phase 4B; 7.1 for chat |
 | 7.7 | `core/ml_intent_classifier.py`, `data/intent_labels.jsonl`, `cli/commands/train_cmd.py` | `core/context_engine.py`, `pyproject.toml` | `[ml]` (scikit-learn) | — |
-| 7.8 | `core/codebase_map.py`, `cli/commands/map_cmd.py` | `cli/main.py` | reuses `[ml]` | 7.4 recommended |
-| 7.9 | `core/plan_engine.py`, `cli/commands/plan.py` | `cli/main.py` | reuses `[llm]` | 7.1, 7.2 |
+| 7.8 ✅ | `core/codebase_map.py`, `cli/commands/map_cmd.py` | `cli/main.py`, `mcp_server/tools.py`, `mcp_server/server.py` | reuses `[ml]` | — (uses `file_content`, not `git_diff`) |
+| 7.9 ✅ | `core/plan_engine.py`, `cli/commands/plan_cmd.py` | `cli/main.py`, `mcp_server/tools.py`, `mcp_server/server.py` | reuses `[llm]` | 7.1 |
 
 ---
 
@@ -4135,8 +4149,8 @@ devmemory search "rate limiting" --type agent_solution  # plan saved
 | **Done** | 7.7 | ML Intent Classifier (SGDClassifier + TF-IDF, confidence-gated fallback) | 1 day | |
 | **Done** | 7.1 | Local LLM / RAG (`devmemory ask`, Ollama/llama.cpp, query planner, `[llm]`/`[speak]` extras) | — | ✅ |
 | **Done** | 7.2 | Memory Feedback Loop (`--save` flag, Q&A stored as agent_solution) | — | ✅ |
-| **Future** | 7.8 | Codebase Map Generation (`devmemory map`, KMeans on stored vectors) | 1 day | |
-| **Future** | 7.9 | Agent Mode (`devmemory plan`, git diff + memories + LLM) | 1 day | |
+| **Done** | 7.8 | Codebase Map Generation (`devmemory map` + `get_codebase_map` MCP, KMeans on `file_content` vectors) | — | ✅ |
+| **Done** | 7.9 | Agent Mode (`devmemory plan` + `plan_task` MCP, memory context + git state + LLM) | — | ✅ |
 | **Future** | 7.5 | VSCode Extension (TypeScript, zero runtime deps, talks to REST API) | 2 days | |
 | **Future** | 7.6 | Web UI (Svelte SPA at /ui, 5 tabs, 3 new API routes) | 3 days | |
 

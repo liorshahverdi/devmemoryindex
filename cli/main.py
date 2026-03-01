@@ -93,5 +93,19 @@ try:
 except ImportError:
     pass
 
+# Phase 7.8 — Codebase map (requires [ml] extra for scikit-learn)
+try:
+    from cli.commands.map_cmd import map_codebase
+    app.command(name="map")(map_codebase)
+except ImportError:
+    pass
+
+# Phase 7.9 — Plan tool (requires [llm] extra for LLM backend)
+try:
+    from cli.commands.plan_cmd import plan
+    app.command()(plan)
+except ImportError:
+    pass
+
 if __name__ == "__main__":
     app()
