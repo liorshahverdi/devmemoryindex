@@ -25,12 +25,16 @@ def _log(message: str, level: str = "INFO") -> None:
         console.print(message)
 
 
-def run_daemon():
+def run_daemon(jarvis: bool = False):
     """Run connectors on independent per-connector schedules.
 
     Each connector fires when `now - last_run >= configured_interval`.
     The loop wakes every 60 s to check — so the real granularity is ±60 s.
     Logs are written to ~/.local/share/devmemory/daemon.log and trimmed daily.
+
+    Args:
+        jarvis: When True, start the wake word listener thread alongside the
+                connector loop. Requires devmemory[jarvis] to be installed.
     """
     connectors = get_connectors()
 
@@ -46,6 +50,15 @@ def run_daemon():
 
     # Start filesystem watcher in background thread
     start_watcher()
+
+    # Start wake word listener if --jarvis mode is enabled
+    if jarvis:
+        try:
+            from daemon.wake_word import start_wake_word_thread
+            start_wake_word_thread()
+            _log("Wake word listener started — say 'hey devmem' to activate")
+        except Exception as exc:
+            _log(f"Wake word listener failed to start: {exc}", "WARN")
 
     last_run: dict[str, float] = {}  # connector name → last run timestamp
     last_prune_date = None

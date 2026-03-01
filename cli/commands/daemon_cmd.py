@@ -6,10 +6,15 @@ app = typer.Typer(help="Manage the DevMemoryIndex background daemon.")
 
 
 @app.command("start")
-def start():
+def start(
+    jarvis: bool = typer.Option(
+        False, "--jarvis",
+        help="Enable wake word listener ('hey devmem'). Requires devmemory[jarvis].",
+    ),
+):
     """Start the daemon in the foreground (per-connector schedules from config)."""
     from daemon.scheduler import run_daemon
-    run_daemon()
+    run_daemon(jarvis=jarvis)
 
 
 @app.command("install")
