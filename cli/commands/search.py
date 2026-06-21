@@ -3,8 +3,6 @@ import typer
 from typing import Optional
 from rich.console import Console
 from rich.table import Table
-from core.store_provider import get_store
-from core.embeddings import embed
 from cli.commands._errors import exit_on_runtime_error
 
 console = Console()
@@ -37,16 +35,32 @@ def search(
     intent_label, routing = classify_intent(query)
 
     try:
-        store = get_store()
-        vector = embed(query)
+        from core.backup_read_store import BackupReadStore, default_backup_path
+        backup_path = default_backup_path()
+        store = BackupReadStore(backup_path) if backup_path.exists() else None
+        if store is None:
+            from core.store_provider import get_store
+            store = get_store()
+        results = []
+        if hasattr(store, "text_search"):
+            results = store.text_search(
+                query,
+                k=k,
+                type_filter=memory_type,
+                repo_filter=repo,
+                speaker_filter=speaker,
+            )
+        if not results:
+            from core.embeddings import embed
+            vector = embed(query)
+            results = store.hybrid_search(
+                query, vector, k=k,
+                type_filter=memory_type,
+                repo_filter=repo,
+                speaker_filter=speaker,
+            )
     except RuntimeError as exc:
         exit_on_runtime_error(exc)
-    results = store.hybrid_search(
-        query, vector, k=k,
-        type_filter=memory_type,
-        repo_filter=repo,
-        speaker_filter=speaker,
-    )
 
     # Recall intent: sort by timestamp descending
     if routing.get("sort_by_time"):

@@ -3,8 +3,6 @@ import json
 import subprocess
 from rich.console import Console
 from rich.markdown import Markdown
-from core.store_provider import get_store
-from core.embeddings import embed
 from cli.commands._errors import exit_on_runtime_error
 
 console = Console()
@@ -23,9 +21,16 @@ def context(
     """Build AI-ready context from your developer memory."""
     try:
         from core.context_engine import ContextEngine
-        store = get_store()
+        from core.backup_read_store import BackupReadStore, default_backup_path
+        backup_path = default_backup_path()
+        store = BackupReadStore(backup_path) if backup_path.exists() else None
+        vector = None
+        if store is None:
+            from core.store_provider import get_store
+            from core.embeddings import embed
+            store = get_store()
+            vector = embed(query)
         engine = ContextEngine(store)
-        vector = embed(query)
     except RuntimeError as exc:
         exit_on_runtime_error(exc)
 
