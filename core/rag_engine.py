@@ -9,7 +9,10 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime
 
-from core.memory_store import MemoryStore
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.memory_store import MemoryStore
 from core.context_engine import ContextEngine
 
 _SYSTEM_PROMPT = """\
@@ -21,7 +24,7 @@ clearly rather than guessing. Be concise and precise."""
 
 class RAGEngine:
 
-    def __init__(self, store: MemoryStore, backend):
+    def __init__(self, store, backend):
         self.store = store
         self.backend = backend
         self._ctx = ContextEngine(store)
@@ -34,6 +37,39 @@ class RAGEngine:
         """
         from core.query_planner import QueryPlanner
         return QueryPlanner(self.backend).plan(query, repo=repo)
+
+    def ask_fast(
+        self,
+        query: str,
+        repo: str | None = None,
+        type_filter: str | None = None,
+        max_memories: int = 1,
+    ):
+        """Return a fast extractive answer from retrieved memories without LLM generation."""
+        if hasattr(self.store, "text_search"):
+            memories = self.store.text_search(
+                query,
+                k=max_memories,
+                type_filter=type_filter,
+                repo_filter=repo,
+            )
+        else:
+            memories = []
+        if not memories:
+            return "No relevant memories found for that question.", [], {}
+        answer = self._extractive_answer(memories)
+        return answer, memories, {}
+
+    def _extractive_answer(self, memories: list) -> str:
+        lines = []
+        for i, memory in enumerate(memories, 1):
+            body = (memory.get("raw_text") or memory.get("summary") or "").strip()
+            body = " ".join(body.split())
+            words = body.split()
+            if len(words) > 75:
+                body = " ".join(words[:75]).rstrip(" ,;:") + "..."
+            lines.append(f"[MEMORY-{i}] {body}")
+        return "\n\n".join(lines)
 
     def ask(
         self,

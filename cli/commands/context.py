@@ -3,9 +3,7 @@ import json
 import subprocess
 from rich.console import Console
 from rich.markdown import Markdown
-from core.store_provider import get_store
-from core.embeddings import embed
-from core.context_engine import ContextEngine
+from cli.commands._errors import exit_on_runtime_error
 
 console = Console()
 
@@ -21,9 +19,20 @@ def context(
     copy: bool = typer.Option(False, "--copy", help="Copy context to clipboard"),
 ):
     """Build AI-ready context from your developer memory."""
-    store = get_store()
-    engine = ContextEngine(store)
-    vector = embed(query)
+    try:
+        from core.context_engine import ContextEngine
+        from core.backup_read_store import BackupReadStore, default_backup_path
+        backup_path = default_backup_path()
+        store = BackupReadStore(backup_path) if backup_path.exists() else None
+        vector = None
+        if store is None:
+            from core.store_provider import get_store
+            from core.embeddings import embed
+            store = get_store()
+            vector = embed(query)
+        engine = ContextEngine(store)
+    except RuntimeError as exc:
+        exit_on_runtime_error(exc)
 
     result = engine.build(
         query=query,

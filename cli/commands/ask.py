@@ -16,8 +16,9 @@ def ask(
     voice_duration: int = typer.Option(5, "--voice-duration", help="Recording duration in seconds (default 5)."),
     speak: bool = typer.Option(False, "--speak", help="Read the answer aloud (British accent, synced to stream)."),
     no_plan: bool = typer.Option(False, "--no-plan", help="Skip query planning, search all types (original behaviour)."),
+    generate: bool = typer.Option(False, "--generate", help="Use local LLM generation instead of fast extractive answering."),
 ):
-    """Ask a question — retrieves memories, generates a cited answer via local LLM."""
+    """Ask a question — retrieves memories and returns a cited answer."""
     if voice:
         from cli.commands._voice import transcribe_or_exit
         text = transcribe_or_exit(duration=voice_duration)
@@ -27,21 +28,30 @@ def ask(
         console.print("[red]Provide a query or use --voice.[/red]")
         raise typer.Exit(1)
     try:
-        from core.llm_backend import get_backend
         from core.rag_engine import RAGEngine
+        if not generate and not save:
+            from core.backup_read_store import BackupReadStore, default_backup_path
+            backup_path = default_backup_path()
+            store = BackupReadStore(backup_path) if backup_path.exists() else None
+        else:
+            store = None
     except ImportError:
-        console.print("[red]httpx is required: uv pip install -e '.[llm]'[/red]")
+        console.print("[red]httpx is required for generated answers: uv pip install -e '.[llm]'[/red]")
         raise typer.Exit(1)
-
-    from core.store_provider import get_store
 
     cfg = {}
     if model:
         cfg["model"] = model
 
     try:
-        backend = get_backend(cfg or None)
-        store = get_store()
+        if store is None:
+            from core.store_provider import get_store
+            store = get_store()
+        if generate:
+            from core.llm_backend import get_backend
+            backend = get_backend(cfg or None)
+        else:
+            backend = None
         engine = RAGEngine(store, backend)
     except Exception as e:
         console.print(f"[red]Failed to initialise LLM backend: {e}[/red]")
@@ -49,6 +59,21 @@ def ask(
 
     if not voice:
         console.print(f"\n[bold cyan]Query:[/bold cyan] {query}\n")
+
+    if not generate:
+        answer, memories, planned = engine.ask_fast(query, repo=repo, type_filter=memory_type)
+        _print_plan(planned)
+        console.print(Markdown(answer))
+        if speak and answer:
+            from cli.commands._speak import StreamingSpeaker
+            speaker = StreamingSpeaker()
+            speaker.feed(answer)
+            speaker.finish()
+        if save and answer:
+            mem_id = engine.save_answer(query, answer, repo=repo)
+            if mem_id:
+                console.print(f"\n[green]Answer saved as memory {mem_id[:8]}[/green]")
+        return
 
     use_plan = not no_plan and memory_type is None
 

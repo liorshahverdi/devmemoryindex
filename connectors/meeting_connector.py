@@ -128,13 +128,6 @@ class MeetingConnector(Connector):
         except ImportError:
             return 0  # silently skip if Whisper not installed
 
-        import shutil
-        if not shutil.which("ffmpeg"):
-            raise RuntimeError(
-                "ffmpeg not found. Whisper requires ffmpeg to decode audio files.\n"
-                "Install it with: brew install ffmpeg"
-            )
-
         mtime = datetime.fromtimestamp(path.stat().st_mtime)
         mem_id = hashlib.sha256(
             f"{path}|{path.stat().st_mtime}".encode()
@@ -222,6 +215,20 @@ def _parse_text_transcript(raw: str) -> tuple[str, list[str]]:
     return raw, speaker_tags
 
 
+def _ffmpeg_install_hint() -> str:
+    """Return a platform-appropriate ffmpeg install hint."""
+    import platform
+
+    system = platform.system().lower()
+    if system == "darwin":
+        return "Install it with: brew install ffmpeg"
+    if system == "linux":
+        return "Install it with your package manager, e.g. sudo apt install ffmpeg or brew install ffmpeg."
+    if system == "windows":
+        return "Install ffmpeg and ensure ffmpeg.exe is on PATH."
+    return "Install ffmpeg and ensure it is on PATH."
+
+
 def _transcribe(path: Path) -> str:
     """
     Transcribe an audio file using Whisper.
@@ -230,6 +237,13 @@ def _transcribe(path: Path) -> str:
     Falls back to plain Whisper transcript if pyannote is not installed
     or if diarization fails.
     """
+    import shutil
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError(
+            "ffmpeg not found. Whisper requires ffmpeg to decode audio files.\n"
+            f"{_ffmpeg_install_hint()}"
+        )
+
     import whisper
     model = whisper.load_model("base")
     result = model.transcribe(str(path), fp16=False)

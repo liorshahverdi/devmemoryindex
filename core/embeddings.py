@@ -4,8 +4,6 @@ import sys
 from contextlib import contextmanager
 from typing import Any, cast
 
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en"
 _model: Any | None = None
 
@@ -55,10 +53,12 @@ def get_embedding_model():
         with _suppress_sentence_transformer_output():
             _model = SentenceTransformer(DEFAULT_EMBEDDING_MODEL)
     except Exception as exc:
+        offline_hint = " HF_HUB_OFFLINE is set, so downloads are disabled." if os.environ.get("HF_HUB_OFFLINE") else ""
         raise RuntimeError(
-            f"Failed to load embedding model {DEFAULT_EMBEDDING_MODEL!r}. "
-            "If this machine is offline, pre-download/cache the model first or "
-            "run with network access once before retrying the embedding command."
+            f"Failed to load embedding model {DEFAULT_EMBEDDING_MODEL!r}." + offline_hint + " "
+            "Run once with network access so sentence-transformers can cache the model, "
+            "or pre-download it into the Hugging Face cache before using embedding commands offline. "
+            "Set DEVMEMORY_VERBOSE=1 to show detailed model-load diagnostics."
         ) from exc
     return _model
 

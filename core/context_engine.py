@@ -13,25 +13,26 @@ DOES NOT:
 - Estimate tokens (delegated)
 """
 
-from core.memory_store import MemoryStore
+from typing import TYPE_CHECKING
+
 from core.embeddings import embed
 from core.token_budget import pack_within_budget
 import logging
-try:
-    from core.ml_intent_classifier import classify_intent_ml as classify_intent
-except ImportError:
-    logging.debug(
-        "core.ml_intent_classifier not available (install devmemory[ml]); "
-        "falling back to rule-based intent classifier"
-    )
-    from core.intent_classifier import classify_intent
+
+if TYPE_CHECKING:
+    from core.memory_store import MemoryStore
 from core.ranking import recency_score
 from core.context_cache import cache as _cache
 
 
+def _classify_intent(query: str):
+    from core.intent_classifier import classify_intent
+    return classify_intent(query)
+
+
 class ContextEngine:
 
-    def __init__(self, store: MemoryStore):
+    def __init__(self, store):
         self.store = store
 
     def build(
@@ -50,21 +51,29 @@ class ContextEngine:
         if cached is not None:
             return {**cached, "cached": True}
 
-        if vector is None:
-            vector = embed(query)
+        if vector is None and hasattr(self.store, "text_search"):
+            candidates = self.store.text_search(
+                query,
+                k=max_memories * 3,
+                type_filter=type_filter,
+                repo_filter=repo,
+            )
+        else:
+            if vector is None:
+                vector = embed(query)
 
-        # 1. Hybrid search for candidates
-        candidates = self.store.hybrid_search(
-            query, vector, k=max_memories * 3, type_filter=type_filter
-        )
+            # 1. Hybrid search for candidates
+            candidates = self.store.hybrid_search(
+                query, vector, k=max_memories * 3, type_filter=type_filter
+            )
 
-        # 2. Optional repo filter
-        if repo:
-            candidates = [c for c in candidates if c.get("repo") == repo]
+            # 2. Optional repo filter
+            if repo:
+                candidates = [c for c in candidates if c.get("repo") == repo]
 
         # 3. Classify intent and re-rank with adjusted weights + type boosting
         detected_intent, routing = (
-            (intent, {}) if intent else classify_intent(query)
+            (intent, {}) if intent else _classify_intent(query)
         )
         if routing:
             if routing.get("sort_by_time"):
@@ -118,6 +127,20 @@ class ContextEngine:
         _cache.set(query, repo, format, intent, result)
         return result
 
+    def _recency(self, value) -> float:
+        from datetime import datetime as _dt
+        if hasattr(value, "tzinfo") or isinstance(value, _dt):
+            try:
+                return recency_score(value.replace(tzinfo=None))
+            except Exception:
+                return 0.0
+        if isinstance(value, str):
+            try:
+                return recency_score(_dt.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None))
+            except ValueError:
+                return 0.0
+        return 0.0
+
     def _apply_intent_routing(self, memories: list, routing: dict) -> list:
         """Re-score candidates with intent-adjusted weights and sort boosted types first."""
         type_boost = routing.get("type_boost", [])
@@ -128,7 +151,7 @@ class ContextEngine:
         def intent_score(m: dict) -> tuple:
             semantic = 1 - m.get("_distance", 1.0)
             importance = m.get("importance", 0.5)
-            recency = recency_score(m["timestamp"])
+            recency = self._recency(m.get("timestamp"))
             score = semantic * sem_w + importance * imp_w + recency * rec_w
             boosted = 1 if m.get("type") in type_boost else 0
             return (boosted, score)

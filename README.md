@@ -86,11 +86,12 @@ devmemory search "redis fix" --speak
 ### `add` — Manually store a memory
 
 ```bash
-# Paste a solution, note, or command interactively
-devmemory add
+# Provide a concise summary inline
+# (the same text is stored as both summary and raw text)
+devmemory add "Set X-Forwarded-Host header in nginx"
 
-# Provide inline
-devmemory add --summary "Proxy fix" --raw "Set X-Forwarded-Host header in nginx"
+# Add metadata
+devmemory add "Proxy fix" --type agent_solution --repo api-gateway --importance 0.8
 ```
 
 ### `get` — Inspect a single memory
@@ -143,7 +144,7 @@ devmemory stats
 devmemory prune --dry-run
 
 # Remove memories below importance threshold
-devmemory prune --min-importance 0.3
+devmemory prune --floor 0.3
 ```
 
 ### `health` — Store quality dashboard
@@ -254,50 +255,30 @@ Runs connectors on their configured schedules and watches markdown directories f
 # Run in the foreground
 devmemory daemon start
 
-# Install as a macOS launchd service (auto-starts at login)
+# Install as a native user service:
+# - Linux: systemd --user at ~/.config/systemd/user/devmemory.service
+# - macOS: launchd LaunchAgent at ~/Library/LaunchAgents/com.devmemory.daemon.plist
 devmemory daemon install
-devmemory daemon uninstall
+
+# Preview the generated Linux systemd unit without writing or enabling it
+devmemory daemon install --dry-run
 
 # Check service status
-# Note: the built-in status/install helpers are macOS launchd-focused today.
 devmemory daemon status
+
+# Disable and remove the native user service
+devmemory daemon uninstall
 
 # View recent daemon log
 devmemory log
 devmemory log --lines 50
 ```
 
-### Linux user service with systemd
-
-On Linux, run the daemon as a user-level systemd service until a native
-`devmemory daemon install` implementation is added for systemd:
-
-```ini
-# ~/.config/systemd/user/devmemory.service
-[Unit]
-Description=DevMemoryIndex background daemon
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/path/to/devmemoryindex
-ExecStart=/path/to/devmemoryindex/.venv/bin/devmemory daemon start
-Restart=on-failure
-RestartSec=10
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=default.target
-```
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now devmemory.service
-systemctl --user status devmemory.service
-```
-
-The daemon log is still available through `devmemory log`.
+On Linux, `devmemory daemon install` writes the systemd user service, runs
+`systemctl --user daemon-reload`, and enables it with
+`systemctl --user enable --now devmemory.service`. If `systemctl --user` is not
+available, use `devmemory daemon install --dry-run` to print the unit and install
+it manually in the target environment.
 
 ---
 

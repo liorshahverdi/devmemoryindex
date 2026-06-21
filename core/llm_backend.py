@@ -38,17 +38,39 @@ class LLMBackend(ABC):
 
 
 class OllamaBackend(LLMBackend):
-    def __init__(self, model: str = "mistral", url: str = "http://localhost:11434"):
+    def __init__(
+        self,
+        model: str = "mistral",
+        url: str = "http://localhost:11434",
+        timeout: float = 8,
+        num_predict: int = 128,
+        keep_alive: str = "10m",
+        temperature: float = 0.1,
+    ):
         self.model = model
         self.url = url.rstrip("/")
+        self.timeout = timeout
+        self.num_predict = num_predict
+        self.keep_alive = keep_alive
+        self.temperature = temperature
+
+    def _payload(self, **kwargs) -> dict:
+        payload = dict(kwargs)
+        payload["keep_alive"] = self.keep_alive
+        payload["options"] = {
+            "num_predict": self.num_predict,
+            "temperature": self.temperature,
+            "top_p": 0.9,
+        }
+        return payload
 
     def generate(self, prompt: str, stream: bool = True):
         import httpx
         endpoint = f"{self.url}/api/generate"
-        payload = {"model": self.model, "prompt": prompt, "stream": stream}
+        payload = self._payload(model=self.model, prompt=prompt, stream=stream)
 
         if stream:
-            with httpx.stream("POST", endpoint, json=payload, timeout=120) as r:
+            with httpx.stream("POST", endpoint, json=payload, timeout=self.timeout) as r:
                 r.raise_for_status()
                 for line in r.iter_lines():
                     if not line:
@@ -62,7 +84,7 @@ class OllamaBackend(LLMBackend):
                     except json.JSONDecodeError:
                         continue
         else:
-            r = httpx.post(endpoint, json=payload, timeout=120)
+            r = httpx.post(endpoint, json=payload, timeout=self.timeout)
             r.raise_for_status()
             yield r.json().get("response", "")
 
@@ -70,10 +92,10 @@ class OllamaBackend(LLMBackend):
         """Use Ollama /api/chat so instruction-tuned models receive proper role tokens."""
         import httpx
         endpoint = f"{self.url}/api/chat"
-        payload = {"model": self.model, "messages": messages, "stream": stream}
+        payload = self._payload(model=self.model, messages=messages, stream=stream)
 
         if stream:
-            with httpx.stream("POST", endpoint, json=payload, timeout=120) as r:
+            with httpx.stream("POST", endpoint, json=payload, timeout=self.timeout) as r:
                 r.raise_for_status()
                 for line in r.iter_lines():
                     if not line:
@@ -88,7 +110,7 @@ class OllamaBackend(LLMBackend):
                     except json.JSONDecodeError:
                         continue
         else:
-            r = httpx.post(endpoint, json=payload, timeout=120)
+            r = httpx.post(endpoint, json=payload, timeout=self.timeout)
             r.raise_for_status()
             yield r.json().get("message", {}).get("content", "")
 
@@ -170,4 +192,8 @@ def get_backend(cfg: dict | None = None) -> LLMBackend:
     return OllamaBackend(
         model=cfg.get("model", "mistral"),
         url=cfg.get("url", "http://localhost:11434"),
+        timeout=float(cfg.get("timeout", 8)),
+        num_predict=int(cfg.get("num_predict", 128)),
+        keep_alive=cfg.get("keep_alive", "10m"),
+        temperature=float(cfg.get("temperature", 0.1)),
     )

@@ -5,10 +5,15 @@ from connectors.registry import get_connectors
 console = Console()
 
 
+def _source_help() -> str:
+    names = ", ".join(C.name for C in get_connectors.__globals__["ALL_CONNECTORS"])
+    return f"Specific connector: {names}. Omit to run all."
+
+
 def ingest(
     source: str | None = typer.Option(
         None, "--source", "-s",
-        help="Specific connector: git, terminal, filesystem, markdown, claude, copilot. Omit to run all.",
+        help=_source_help(),
     ),
 ):
     """Run memory connectors to ingest developer knowledge."""

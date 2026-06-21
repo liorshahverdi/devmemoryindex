@@ -3,7 +3,7 @@ import threading
 import lancedb
 import pyarrow as pa
 from core.schema import Memory
-from core.ranking import compute_score, compute_score_breakdown
+from core.ranking import compute_score, compute_score_breakdown, recency_score
 from core.context_cache import cache as _context_cache
 
 VECTOR_DIM = 384
@@ -383,6 +383,66 @@ class MemoryStore:
         warnings.warn(msg, RuntimeWarning, stacklevel=3)
         self.collection = self._wipe_and_recreate()
 
+    def text_search(
+        self,
+        query: str,
+        k: int = 5,
+        type_filter: str | None = None,
+        repo_filter: str | None = None,
+        speaker_filter: str | None = None,
+    ) -> list:
+        """Fast keyword-only search that avoids embedding model startup.
+
+        Intended for interactive CLI fast paths. It trades some semantic recall
+        for predictable latency by searching summary/raw_text with meaningful
+        query terms and ranking by term coverage, repo/type filters, importance,
+        and recency.
+        """
+        conditions: list[str] = ["(status = 'active' OR status IS NULL)"]
+        if type_filter:
+            safe_type = type_filter.replace("'", "''")
+            conditions.append(f"type LIKE '{safe_type}%'")
+        if repo_filter:
+            safe_repo = repo_filter.replace("'", "''")
+            conditions.append(f"repo = '{safe_repo}'")
+        where_clause = " AND ".join(conditions)
+        kw_where = f"({_keyword_where(query)}) AND {where_clause}"
+        try:
+            limit = min(max(k * 10, 50), 200)
+            results = self.collection.search().where(kw_where).limit(limit).to_list()
+        except Exception:
+            return []
+
+        if speaker_filter:
+            tag_to_find = f"speaker:{speaker_filter.lower()}"
+            results = [r for r in results if tag_to_find in (r.get("tags") or [])]
+
+        import re as _re
+        terms = [
+            w for w in _re.findall(r"\w+", query.lower())
+            if w not in _STOPWORDS and len(w) >= 3
+        ][:6]
+
+        def _coverage_score(memory: dict) -> tuple:
+            summary = (memory.get("summary") or "").lower()
+            raw = (memory.get("raw_text") or "").lower()
+            term_score = 0
+            for term in terms:
+                if term in summary:
+                    term_score += 2
+                elif term in raw:
+                    term_score += 1
+            return (
+                term_score,
+                memory.get("importance") or 0,
+                recency_score(memory.get("timestamp")),
+            )
+
+        scored = [(r, _coverage_score(r)) for r in results]
+        min_terms = 2 if len(terms) >= 3 else 1
+        scored = [item for item in scored if item[1][0] >= min_terms]
+        return [r for r, _score in sorted(scored, key=lambda item: item[1], reverse=True)[:k]]
+
     def hybrid_search(
         self,
         query: str,
@@ -391,9 +451,12 @@ class MemoryStore:
         type_filter: str | None = None,
         repo_filter: str | None = None,
         speaker_filter: str | None = None,
+        update_counters: bool = False,
     ) -> list:
         try:
-            return self._hybrid_search_impl(query, vector, k, type_filter, repo_filter, speaker_filter)
+            return self._hybrid_search_impl(
+                query, vector, k, type_filter, repo_filter, speaker_filter, update_counters=update_counters
+            )
         except Exception as exc:
             err = str(exc).lower()
             if "lance" in err or "not found" in err or "fragment" in err:
@@ -409,6 +472,7 @@ class MemoryStore:
         type_filter: str | None = None,
         repo_filter: str | None = None,
         speaker_filter: str | None = None,
+        update_counters: bool = False,
     ) -> list:
         # Build optional WHERE clause applied at the DB level so filters
         # don't silently exclude results after the k-cap is already applied.
@@ -549,20 +613,56 @@ class MemoryStore:
         for r in top:
             r["related"] = [n["id"] for n in related_pool[:3]]
 
-        # 6. Increment times_retrieved for all top results (best-effort).
-        for r in top:
-            self._increment_counter(r["id"], "times_retrieved")
+        # 6. Optionally increment times_retrieved for all top results.
+        # This is disabled by default because LanceDB updates are expensive on
+        # the interactive read path; daemons or batch jobs can opt in.
+        if update_counters:
+            for r in top:
+                self._increment_counter(r["id"], "times_retrieved")
 
         return top
 
+    def _resolve_id(self, memory_id: str) -> str | None:
+        """Resolve an exact ID or a unique short prefix to the canonical full ID."""
+        safe_id = memory_id.replace("'", "''")
+        try:
+            exact = (
+                self.collection
+                .search()
+                .where(f"id = '{safe_id}'")
+                .limit(1)
+                .to_list()
+            )
+            if exact:
+                return exact[0]["id"]
+
+            # Search output displays 8-character prefixes; accept any unique
+            # prefix users copy from that table, but refuse ambiguous prefixes.
+            if len(memory_id) >= 8:
+                prefix_results = (
+                    self.collection
+                    .search()
+                    .where(f"id LIKE '{safe_id}%'")
+                    .limit(2)
+                    .to_list()
+                )
+                if len(prefix_results) == 1:
+                    return prefix_results[0]["id"]
+        except Exception:
+            return None
+        return None
+
     def get_by_id(self, memory_id: str, reinforce: bool = True) -> dict | None:
-        """Fetch a single memory by exact ID.
+        """Fetch a single memory by exact ID or unique short prefix.
 
         Reinforces importance by a small amount when reinforce=True (default) —
         an explicit fetch is a strong signal that this memory is useful.
-        Returns None if not found.
+        Returns None if not found or if a prefix matches multiple memories.
         """
-        safe_id = memory_id.replace("'", "''")
+        resolved_id = self._resolve_id(memory_id)
+        if resolved_id is None:
+            return None
+        safe_id = resolved_id.replace("'", "''")
         try:
             results = (
                 self.collection
@@ -574,8 +674,8 @@ class MemoryStore:
             if not results:
                 return None
             if reinforce:
-                self.reinforce(memory_id, boost=0.02)
-                self._increment_counter(memory_id, "times_accessed")
+                self.reinforce(resolved_id, boost=0.02)
+                self._increment_counter(resolved_id, "times_accessed")
             return results[0]
         except Exception:
             return None
