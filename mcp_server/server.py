@@ -1,26 +1,29 @@
 """
 DevMemoryIndex MCP Server
 
-Exposes ten tools to Claude Code (and any MCP-compatible agent) via stdio transport:
-  - search_memories      — hybrid search over all indexed developer memories
-  - build_context        — formatted context block for a given task/query
-  - remember_memory      — persist a solution or decision for future sessions
-  - get_memory           — fetch a single memory by ID (resolve related[] links)
-  - get_session_context  — call once at session start to bootstrap context from task + git state
-  - remember_failure     — record a failed approach to avoid repeating it in future sessions
-  - update_memory        — correct or improve an existing memory in-place
-  - reinforce_memory     — explicitly boost importance after successfully applying a solution
-  - get_codebase_map     — cluster file_content memories to reveal subsystem structure
-  - plan_task            — generate a grounded implementation plan from memory + git context
+Exposes DevMemoryIndex tools to Claude Code, Hermes Agent, and any MCP-compatible
+agent via stdio transport. The server currently registers tools for:
+  - memory search and AI-ready context building
+  - session bootstrap from task + git state
+  - memory creation, update, forgetting, reinforcement, and consolidation
+  - score explainability and context exclusion diagnostics
+  - store-health inspection and batch search
+  - codebase maps plus typed memory graph / causality traversal
 
-Transport: stdio (spawned on-demand by Claude Code, no persistent process needed)
+Transport: stdio (spawned on demand by the MCP client; no persistent MCP server
+process is required).
 
-Registration (project-local):
+Hermes Agent registration:
+    hermes mcp add devmemory --command /path/to/devmemory-mcp-server
+
+Claude Code registration (project-local, optional):
     claude mcp add devmemory -s local -- uv run python -m mcp_server.server
 
-Config file: .mcp.json (project root) — used by Claude Code to auto-discover the server.
+Generic MCP clients can use the same stdio command or wrapper script.
 
-Verify in Claude Code: run /mcp — devmemory should appear as connected with 10 tools.
+Config file: .mcp.json (project root) — useful for clients that auto-discover project MCP servers.
+Verify in Hermes: run `hermes mcp test devmemory` — all registered tools should be discovered.
+Verify in Claude Code: run /mcp — devmemory should appear as connected.
 
 Note: directory is named mcp_server/ (not mcp/) to avoid shadowing the mcp PyPI package.
 """
@@ -122,5 +125,10 @@ mcp.tool()(link_memories)
 mcp.tool()(get_memory_graph)
 mcp.tool()(trace_causality)
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the DevMemoryIndex MCP server over stdio."""
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

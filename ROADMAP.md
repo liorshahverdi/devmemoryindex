@@ -8,6 +8,12 @@
 
 ---
 
+## Documentation freshness note
+
+This file is a historical master roadmap and contains implementation notes from earlier phases. For current MCP/Hermes/Linux-daemon follow-up priorities, see `docs/agent-integration-improvements.md`. When this file describes Claude Code integration, treat it as one supported MCP client rather than the primary workflow.
+
+---
+
 ## Current State (Completed)
 
 | Component | Status | Notes |
@@ -58,7 +64,7 @@
 | `core/context_cache.py` | **Done** | Phase 5.B. Module-level LRU cache (50 entries, 5-min TTL) for `ContextEngine.build()`. Keyed on `sha256(query\|repo\|format\|intent)`. Auto-invalidated via `store.add()`. Context response includes `cached: true/false`. |
 | `daemon/jobs/dedup.py` | **Done** | Phase 5.C. Groups memories by `summary[:100].lower()`, keeps highest-importance duplicate, deletes the rest. Runs weekly (Mondays) in daemon scheduler. |
 | `core/memory_store.py` — get_by_id | **Done** | `get_by_id(memory_id)` — fetch a single memory by exact ID. Used to resolve `related[]` links from search results. |
-| `mcp_server/server.py` | **Done** | FastMCP entrypoint, stdio transport, registered with Claude Code via `claude mcp add`. **10 tools.** Instructions updated to guide agents on when to use each tool. |
+| `mcp_server/server.py` | **Done** | FastMCP stdio entrypoint for Hermes Agent, Claude Code, and generic MCP clients. **19 tools.** Instructions guide agents on when to search, build context, write memories, diagnose scores, and maintain memory quality. |
 | `mcp_server/tools.py` | **Done** | `search_memories` (DB-level type/repo filters, returns `id`, `related[]`, `times_retrieved`, `times_accessed`), `build_context`, `remember_memory`, `get_memory`, `get_session_context`, `remember_failure`, `update_memory`, `reinforce_memory`, `get_codebase_map`, `plan_task`. |
 | `mcp_server/tools.py` — engagement fields | **Done** | `search_memories` now returns `times_retrieved` and `times_accessed` per result. Agents can trust solutions with high `times_accessed` relative to `times_retrieved` as proven patterns. |
 | `mcp_server/tools.py` — `update_memory` | **Done** | Corrects or improves a stored memory in-place. Re-embeds when text changes (delete+re-add, preserving counters). Prevents knowledge rot from wrong solutions at high importance. |
@@ -81,7 +87,7 @@
 | `daemon/jobs/memory_cleanup.py` | **Done** | `prune_memories()` — removes importance < 0.05 OR (age > 90 days AND importance < 0.15). |
 | `daemon/jobs/importance_decay.py` | **Done** | `decay_importance(factor=0.99)` — daily decay on all non-pinned memories. |
 | `scripts/truncate_memories.py` | **Done** | Standalone bulk-delete CLI with `--filter-repo`, `--dry-run`, `--yes` confirmation. |
-| `pyproject.toml` | **Done** | `[project.scripts]` registered, hatchling build, dev deps + `[voice]` optional extras configured. |
+| `pyproject.toml` | **Done** | `[project.scripts]` registered (`devmemory`, `devmemory-mcp-server`), hatchling build, dev deps + optional extras configured. |
 | Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/`, `scripts/` directories |
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
 | `connectors/filesystem_connector.py` | **Done** | Indexes code files from configured scan dirs. Language-aware importance: Python/TS/Go=0.7, others=0.5. Skips binaries, hidden dirs, `.gitignore` patterns. `devmemory config add-fs <dir>` to configure. **Stale chunk eviction:** on each re-index run, chunks stored for the file that no longer match current content are deleted automatically. Eliminates ghost chunks from old code versions. |
@@ -3026,7 +3032,7 @@ devmemory prune --floor 0.1 --age 60    # stricter thresholds
 >
 > **Why MCP before REST:** An agent calling `memory_search` via MCP requires zero server setup. The MCP server is spawned on-demand by Claude Code. REST requires a persistent `uvicorn` process and port management. For same-machine agent integration, MCP is strictly better.
 >
-> **All local. No cloud.** Uses `mcp[server]` (pure-Python PyPI package, stdio transport).
+> **All local. No cloud.** Uses `mcp>=1.0` (pure-Python PyPI package, stdio transport).
 
 ### 4A.1 MCP Server Setup
 
@@ -3043,7 +3049,7 @@ mcp_server/
 ```toml
 # pyproject.toml
 [project.optional-dependencies]
-mcp = ["mcp[server]>=1.0"]
+mcp = ["mcp>=1.0"]
 ```
 Install: `uv pip install "devmemoryindex[mcp]"`
 

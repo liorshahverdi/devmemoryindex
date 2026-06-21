@@ -284,15 +284,21 @@ devmemory prune --dry-run
 
 ---
 
-## 12. MCP Tools (Claude Code Integration)
+## 12. MCP Tools (Hermes / Claude Code / Generic MCP)
 
-Verify the MCP server is registered:
+Verify the MCP server is registered in the MCP client you use:
+
 ```bash
+# Hermes Agent
+hermes mcp test devmemory
+
+# Claude Code, if configured
 claude mcp list
 ```
-**Expect:** `devmemory` listed.
 
-Test each tool in a Claude Code session:
+**Expect:** `devmemory` listed/connected and 19 tools discovered.
+
+Test each tool from an MCP-capable agent session. The examples below use tool-call pseudocode and are not tied to a single client:
 
 ### 12a. `get_session_context` (call at session start)
 ```
@@ -422,6 +428,30 @@ plan_task(description="anything")
 (with Ollama stopped)
 **Expect:** `{"plan": "", "memory_count": N, "error": "LLM backend error: ..."}`.
 
+### 12k. Score diagnostics and context exclusion
+```
+explain_score(memory_id="<id>", query="hybrid search ranking")
+why_not_included(memory_id="<id>", query="hybrid search ranking")
+```
+**Expect:** Score/component details for included memories and a diagnostic reason for memories excluded by deduplication, token budget, or low match quality.
+
+### 12l. Store health, consolidation, and forgetting
+```
+get_store_health()
+consolidate_memories(ids=["<id1>", "<id2>"], summary="canonical fix for ranking")
+forget_memory(memory_id="<bad-id>", reason="outdated workaround")
+```
+**Expect:** Health metrics include type breakdown/stale/low-CTR signals; consolidation creates a canonical memory; forgetting excludes the memory from future search while preserving an audit trail.
+
+### 12m. Batch search and memory graph
+```
+search_batch(queries=["hybrid search", "ranking formula"])
+link_memories(from_id="<symptom-id>", to_id="<fix-id>", edge_type="fixed_by")
+get_memory_graph(memory_id="<fix-id>", depth=2)
+trace_causality(memory_id="<fix-id>")
+```
+**Expect:** Batch search returns deduplicated merged results; graph tools return typed edges useful for root-cause or fix-chain reasoning.
+
 ---
 
 ## 13. Config Management
@@ -471,6 +501,7 @@ uv run pytest core/tests/test_ranking.py -v
 uv run pytest core/tests/test_context_engine.py -v
 uv run pytest api/tests/test_auth.py -v
 uv run pytest daemon/tests/ -v        # Phase 8 voice pipeline + formatter tests
+uv run pytest tests/test_packaging.py -v
 ```
 **Expect:** All green.
 

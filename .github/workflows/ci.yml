@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      HF_HUB_OFFLINE: "0"
+      TRANSFORMERS_OFFLINE: "0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system test dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked test environment
+        run: uv sync --frozen --group dev --extra api --extra mcp --extra watch --extra ml
+
+      - name: Run test suite
+        run: uv run python -m pytest -q
+
+  packaging:
+    name: Packaging and MCP entry point
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with MCP extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[mcp]' pytest build
+
+      - name: Run packaging regression tests
+        run: python -m pytest tests/test_packaging.py -q
+
+      - name: Build wheel
+        run: python -m build --wheel
+
+      - name: Verify wheel metadata and entry points
+        run: |
+          python - <<'PY'
+          import configparser
+          import zipfile
+          from pathlib import Path
+
+          wheels = sorted(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          wheel = wheels[0]
+
+          with zipfile.ZipFile(wheel) as zf:
+              metadata_name = next(name for name in zf.namelist() if name.endswith(".dist-info/METADATA"))
+              entry_points_name = next(name for name in zf.namelist() if name.endswith(".dist-info/entry_points.txt"))
+              metadata = zf.read(metadata_name).decode()
+              entry_points = zf.read(entry_points_name).decode()
+
+          assert "Provides-Extra: mcp" in metadata
+          assert 'Requires-Dist: mcp>=1.0; extra == "mcp"' in metadata or "Requires-Dist: mcp>=1.0; extra == 'mcp'" in metadata
+          assert 'Requires-Dist: lancedb; extra == "mcp"' in metadata or "Requires-Dist: lancedb; extra == 'mcp'" in metadata
+          assert 'Requires-Dist: sentence-transformers; extra == "mcp"' in metadata or "Requires-Dist: sentence-transformers; extra == 'mcp'" in metadata
+
+          parser = configparser.ConfigParser()
+          parser.read_string(entry_points)
+          assert parser["console_scripts"]["devmemory-mcp-server"] == "mcp_server.server:main"
+          PY
+
+      - name: Verify installed MCP server command
+        run: command -v devmemory-mcp-server

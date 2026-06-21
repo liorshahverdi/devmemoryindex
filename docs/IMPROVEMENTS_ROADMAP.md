@@ -84,7 +84,7 @@ Merge these signals with the task description query before hitting the search in
 **Files to modify:**
 - `mcp_server/tools.py` — add `files` param to `build_context` and `get_session_context`
 - `core/context_engine.py` — accept file hints as supplementary query terms
-- `README.md` — document the pattern for Claude Code CLAUDE.md hooks
+- `README.md` — document the pattern for Hermes Agent startup guidance and optional Claude Code project instructions
 
 ---
 

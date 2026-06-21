@@ -4,7 +4,7 @@ A persistent developer memory store that captures, indexes, and semantically sea
 
 ## Overview
 
-DevMemoryIndex turns your day-to-day development activity into a searchable, vector-indexed knowledge base. Memories are stored with rich metadata and retrieved via hybrid search (semantic similarity + keyword matching). It runs as a local daemon, exposes a REST API for cross-machine access, and integrates directly into Claude Code via MCP.
+DevMemoryIndex turns your day-to-day development activity into a searchable, vector-indexed knowledge base. Memories are stored with rich metadata and retrieved via hybrid search (semantic similarity + keyword matching). It runs as a local daemon, exposes a REST API for cross-machine access, and integrates with Hermes Agent, Claude Code, and other MCP-compatible coding agents via stdio MCP.
 
 ```
 core/         Storage engine, embeddings, hybrid search, config, edge graph
@@ -25,6 +25,19 @@ uv sync --group dev
 ```
 
 The `devmemory` CLI is available via `uv run devmemory` or add it to your PATH.
+
+For an installable CLI and MCP server entry point in a virtualenv, use:
+
+```bash
+uv pip install -e '.[mcp,watch,ml,llm]'
+```
+
+This installs both console scripts:
+
+```bash
+devmemory --help
+devmemory-mcp-server  # stdio MCP server for Hermes, Claude Code, and generic MCP clients
+```
 
 ---
 
@@ -246,12 +259,45 @@ devmemory daemon install
 devmemory daemon uninstall
 
 # Check service status
+# Note: the built-in status/install helpers are macOS launchd-focused today.
 devmemory daemon status
 
 # View recent daemon log
 devmemory log
 devmemory log --lines 50
 ```
+
+### Linux user service with systemd
+
+On Linux, run the daemon as a user-level systemd service until a native
+`devmemory daemon install` implementation is added for systemd:
+
+```ini
+# ~/.config/systemd/user/devmemory.service
+[Unit]
+Description=DevMemoryIndex background daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/devmemoryindex
+ExecStart=/path/to/devmemoryindex/.venv/bin/devmemory daemon start
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now devmemory.service
+systemctl --user status devmemory.service
+```
+
+The daemon log is still available through `devmemory log`.
 
 ---
 
@@ -336,22 +382,47 @@ open http://localhost:7711/docs
 
 ---
 
-## MCP Server (Claude Code integration)
+## MCP Server (agent integrations)
 
-DevMemoryIndex exposes a Model Context Protocol server so Claude Code can query your memories directly.
+DevMemoryIndex exposes a Model Context Protocol server so MCP-compatible coding
+agents can query and update your memories directly. The server uses stdio
+transport, so the MCP client starts it on demand; you do not need to run a
+separate long-lived MCP process.
 
-Add to `~/.claude/settings.json`:
+### Hermes Agent
+
+After installing `.[mcp]`, register the packaged stdio server command:
+
+```bash
+hermes mcp add devmemory --command devmemory-mcp-server
+hermes mcp test devmemory
+```
+
+If you are running directly from a checkout without installing console scripts,
+use an explicit Python command or a small wrapper that runs
+`python -m mcp_server.server` from the repository root.
+
+After adding the MCP server, start a new Hermes session or restart the gateway
+so the discovered tools are available to the agent.
+
+### Claude Code
+
+Claude Code is also supported as an MCP client. Add to `~/.claude/settings.json`:
 
 ```json
 {
   "mcpServers": {
     "devmemory": {
-      "command": "uv",
-      "args": ["run", "--project", "/path/to/devmemoryindex", "python", "-m", "mcp_server"]
+      "command": "devmemory-mcp-server"
     }
   }
 }
 ```
+
+
+### Available tools
+
+The MCP server currently registers 19 tools. Agent-facing descriptions should remain concise and operational because they are loaded into MCP clients as tool schemas.
 
 **19 MCP tools available:**
 
