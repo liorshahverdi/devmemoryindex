@@ -3812,7 +3812,7 @@ def run_daemon(interval: int = 300):
 
 ---
 
-## Phase 5 (new) — Smart Retrieval (Intelligence Layer)
+## Smart Retrieval Layer (pulled forward from Phase 6)
 
 > **Pulled forward from Phase 6.** These features directly improve query quality for both voice search and agent queries. Build after Phase 4A MCP is working. No LLMs required — all rule-based or lightweight.
 
@@ -4154,7 +4154,7 @@ devmemory plan "fix hybrid search scoring" --repo devmemoryindex --save
 
 ---
 
-## Phase 8 — Jarvis Mode (Always-On Voice Assistant)
+## Voice/Jarvis Implementation Notes (Always-On Voice Assistant)
 
 > **Goal:** Make DevMemoryIndex feel like a home voice assistant. Say "hey devmem", ask anything, get a spoken answer. No terminal. No keyboard. Recognises its owner; rejects strangers.
 

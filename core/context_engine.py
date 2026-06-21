@@ -64,10 +64,15 @@ class ContextEngine:
 
             # 1. Hybrid search for candidates
             candidates = self.store.hybrid_search(
-                query, vector, k=max_memories * 3, type_filter=type_filter
+                query,
+                vector,
+                k=max_memories * 3,
+                type_filter=type_filter,
+                repo_filter=repo,
             )
 
-            # 2. Optional repo filter
+            # 2. Optional repo filter (kept as a defensive guard for stores that
+            # do not enforce repo_filter themselves).
             if repo:
                 candidates = [c for c in candidates if c.get("repo") == repo]
 

@@ -9,8 +9,8 @@ DevMemoryIndex turns your day-to-day development activity into a searchable, vec
 ```
 core/         Storage engine, embeddings, hybrid search, config, edge graph
 api/          FastAPI REST server with optional API key auth
-cli/          Typer CLI — 21 commands covering all features
-connectors/   Git, terminal, filesystem, markdown, Copilot, browser, meetings
+cli/          Typer CLI — commands covering search, ingest, API, MCP-adjacent workflows, voice, and maintenance
+connectors/   Git commits/diffs, terminal, filesystem, markdown, Claude/Copilot, browser, meetings
 daemon/       Background scheduler, file watcher, edge inference jobs
 memory_db/    LanceDB on-disk database (auto-created)
 ```
@@ -192,25 +192,29 @@ devmemory ingest
 
 # Run a specific connector
 devmemory ingest --source git
+devmemory ingest --source diff
 devmemory ingest --source terminal
 devmemory ingest --source filesystem
 devmemory ingest --source markdown
 devmemory ingest --source claude
 devmemory ingest --source copilot
+devmemory ingest --source browser
+devmemory ingest --source meeting
 ```
 
 ### Available connectors
 
 | Source | What it indexes |
 |---|---|
-| `git` | Commit messages + diffs from configured repos |
+| `git` | Commit messages from configured repos |
+| `diff` | Per-file code diffs from recent commits |
 | `terminal` | Shell history (`~/.zsh_history`, `~/.bash_history`) |
 | `filesystem` | Source files in configured code directories |
 | `markdown` | Notes and docs from configured notes directories |
 | `claude` | Claude Code session files (`~/.claude/projects/`) |
 | `copilot` | GitHub Copilot chat logs |
-| `browser` | Browser history (Chrome/Firefox) |
-| `meetings` | Meeting transcripts from configured directories |
+| `browser` | Browser bookmarks/history metadata (Chrome/Firefox/Safari where available) |
+| `meeting` | Meeting transcripts/recordings from configured directories |
 
 ---
 
@@ -254,6 +258,9 @@ Runs connectors on their configured schedules and watches markdown directories f
 ```bash
 # Run in the foreground
 devmemory daemon start
+
+# Run with always-on voice/Jarvis mode (requires [jarvis] extra)
+devmemory daemon start --jarvis
 
 # Install as a native user service:
 # - Linux: systemd --user at ~/.config/systemd/user/devmemory.service
@@ -349,9 +356,9 @@ curl "http://localhost:7711/memory/a3f9c12d-..."
 curl "http://localhost:7711/memory/context?q=auth+flow&format=markdown"
 
 # Ingest via webhook (e.g. push a meeting transcript from another machine)
-curl -X POST http://localhost:7711/webhook/ingest \
+curl -X POST http://localhost:7711/memory/ingest \
   -H "Content-Type: application/json" \
-  -d '{"summary": "Q1 planning call", "raw_text": "...", "type": "voice_note"}'
+  -d '{"text": "Q1 planning call transcript...", "source": "meeting-upload", "memory_type": "voice_note", "repo": "myapp", "tags": ["meeting"]}'
 
 # Long texts are automatically chunked (~1000 chars/chunk, paragraph-aligned)
 # Short text response: {"status": "ok", "id": "..."}

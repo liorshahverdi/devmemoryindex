@@ -120,7 +120,7 @@ def list_config():
 
 @app.command("set-schedule")
 def set_schedule(
-    connector: str = typer.Argument(..., help="Connector name: git, claude, terminal, markdown"),
+    connector: str = typer.Argument(..., help=f"Connector name: {', '.join(cfg.CONNECTOR_NAMES)}"),
     seconds: int = typer.Argument(..., help="Ingest interval in seconds"),
 ):
     """Set how often a connector ingests (e.g. devmemory config set-schedule git 300)."""

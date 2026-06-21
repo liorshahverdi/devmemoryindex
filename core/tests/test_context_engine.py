@@ -111,6 +111,24 @@ def test_repo_filter_excludes_other_repos(store, engine):
     assert "repo-b" not in ids, "Memory from excluded repo must not appear"
 
 
+def test_repo_filter_is_passed_to_hybrid_search(store, engine, monkeypatch):
+    """
+    Repo filtering must happen inside the store query, not only after global
+    over-retrieval, otherwise relevant repo-local memories can be missed.
+    """
+    captured = {}
+
+    def fake_hybrid_search(query, vector, k=5, type_filter=None, repo_filter=None, speaker_filter=None):
+        captured["repo_filter"] = repo_filter
+        return []
+
+    monkeypatch.setattr(store, "hybrid_search", fake_hybrid_search)
+
+    engine.build("repo filter pass-through unique", vector=[0.0] * 384, repo="proj-alpha")
+
+    assert captured["repo_filter"] == "proj-alpha"
+
+
 def test_format_modes_produce_valid_output(store, engine):
     """
     Each format mode ('raw', 'claude', 'markdown') must produce a non-empty

@@ -1,19 +1,14 @@
 import typer
 from rich.console import Console
-from connectors.registry import get_connectors
+from connectors.registry import ACTIVE_CONNECTOR_NAMES, get_connectors
 
 console = Console()
-
-
-def _source_help() -> str:
-    names = ", ".join(C.name for C in get_connectors.__globals__["ALL_CONNECTORS"])
-    return f"Specific connector: {names}. Omit to run all."
 
 
 def ingest(
     source: str | None = typer.Option(
         None, "--source", "-s",
-        help=_source_help(),
+        help=f"Specific connector: {', '.join(ACTIVE_CONNECTOR_NAMES)}. Omit to run all.",
     ),
 ):
     """Run memory connectors to ingest developer knowledge."""

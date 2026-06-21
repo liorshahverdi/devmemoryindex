@@ -273,6 +273,7 @@ def set_llm_config(backend: str | None = None, model: str | None = None, url: st
 
 _DEFAULT_INTERVALS: dict[str, int] = {
     "git": 600,        # 10 min
+    "diff": 600,       # 10 min
     "claude": 300,     # 5 min
     "terminal": 3600,  # 1 hour
     "markdown": 1800,  # 30 min

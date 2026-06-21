@@ -11,6 +11,13 @@ def _pyproject() -> dict:
     return tomllib.loads((ROOT / "pyproject.toml").read_text())
 
 
+def test_core_runtime_dependencies_are_project_dependencies():
+    deps = _pyproject()["project"]["dependencies"]
+
+    assert any(dep.startswith("lancedb") for dep in deps)
+    assert any(dep.startswith("sentence-transformers") for dep in deps)
+
+
 def test_mcp_optional_dependency_uses_current_sdk_package_name():
     """The MCP SDK no longer publishes a `server` extra; avoid stale-extra warnings."""
     optional_deps = _pyproject()["project"]["optional-dependencies"]

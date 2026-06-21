@@ -26,6 +26,8 @@ ALL_CONNECTORS = [
     # VoiceConnector — NOT here. Use VoiceConnector() directly in CLI commands.
 ]
 
+ACTIVE_CONNECTOR_NAMES = [C.name for C in ALL_CONNECTORS]
+
 # For explicit CLI use only (devmemory dictate, devmemory search --voice).
 # VoiceConnector needs optional audio deps: uv pip install "devmemoryindex[voice]"
 try:

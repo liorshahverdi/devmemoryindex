@@ -2,7 +2,7 @@
 DevMemoryIndex MCP Server
 
 Exposes DevMemoryIndex tools to Claude Code, Hermes Agent, and any MCP-compatible
-agent via stdio transport. The server currently registers tools for:
+agent via stdio transport. The server currently registers 19 tools for:
   - memory search and AI-ready context building
   - session bootstrap from task + git state
   - memory creation, update, forgetting, reinforcement, and consolidation
@@ -23,7 +23,7 @@ Generic MCP clients can use the same stdio command or wrapper script.
 
 Config file: .mcp.json (project root) — useful for clients that auto-discover project MCP servers.
 Verify in Hermes: run `hermes mcp test devmemory` — all registered tools should be discovered.
-Verify in Claude Code: run /mcp — devmemory should appear as connected.
+Verify in Claude Code: run /mcp — devmemory should appear as connected with 19 tools.
 
 Note: directory is named mcp_server/ (not mcp/) to avoid shadowing the mcp PyPI package.
 """
