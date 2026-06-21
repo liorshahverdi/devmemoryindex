@@ -125,5 +125,10 @@ mcp.tool()(link_memories)
 mcp.tool()(get_memory_graph)
 mcp.tool()(trace_causality)
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the DevMemoryIndex MCP server over stdio."""
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

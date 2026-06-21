@@ -26,13 +26,18 @@ uv sync --group dev
 
 The `devmemory` CLI is available via `uv run devmemory` or add it to your PATH.
 
-For an installable CLI in a virtualenv, use:
+For an installable CLI and MCP server entry point in a virtualenv, use:
 
 ```bash
 uv pip install -e '.[mcp,watch,ml,llm]'
 ```
 
-> Current packaging note: `pyproject.toml` still declares `mcp = ["mcp[server]>=1.0"]`, but current MCP SDK releases no longer publish a `server` extra. If pip warns that `mcp` does not provide the `server` extra, install is still expected to work once `mcp>=1.0` is present. The cleanup is tracked in `docs/agent-integration-improvements.md`.
+This installs both console scripts:
+
+```bash
+devmemory --help
+devmemory-mcp-server  # stdio MCP server for Hermes, Claude Code, and generic MCP clients
+```
 
 ---
 
@@ -386,21 +391,16 @@ separate long-lived MCP process.
 
 ### Hermes Agent
 
-Hermes has a native MCP client. A wrapper script avoids argument parsing issues
-with `python -m` and keeps the working directory stable:
+After installing `.[mcp]`, register the packaged stdio server command:
 
 ```bash
-cat > ~/.local/bin/devmemory-mcp-server <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-cd /path/to/devmemoryindex
-exec /path/to/devmemoryindex/.venv/bin/python -m mcp_server.server
-EOF
-chmod +x ~/.local/bin/devmemory-mcp-server
-
-hermes mcp add devmemory --command ~/.local/bin/devmemory-mcp-server
+hermes mcp add devmemory --command devmemory-mcp-server
 hermes mcp test devmemory
 ```
+
+If you are running directly from a checkout without installing console scripts,
+use an explicit Python command or a small wrapper that runs
+`python -m mcp_server.server` from the repository root.
 
 After adding the MCP server, start a new Hermes session or restart the gateway
 so the discovered tools are available to the agent.
@@ -413,33 +413,12 @@ Claude Code is also supported as an MCP client. Add to `~/.claude/settings.json`
 {
   "mcpServers": {
     "devmemory": {
-      "command": "uv",
-      "args": ["run", "--project", "/path/to/devmemoryindex", "python", "-m", "mcp_server.server"]
+      "command": "devmemory-mcp-server"
     }
   }
 }
 ```
 
-### Hermes Agent
-
-Hermes has a native MCP client. A wrapper script avoids argument parsing issues
-with `python -m` and keeps the working directory stable:
-
-```bash
-cat > ~/.local/bin/devmemory-mcp-server <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-cd /path/to/devmemoryindex
-exec /path/to/devmemoryindex/.venv/bin/python -m mcp_server.server
-EOF
-chmod +x ~/.local/bin/devmemory-mcp-server
-
-hermes mcp add devmemory --command ~/.local/bin/devmemory-mcp-server
-hermes mcp test devmemory
-```
-
-After adding the MCP server, start a new Hermes session or restart the gateway
-so the discovered tools are available to the agent.
 
 ### Available tools
 

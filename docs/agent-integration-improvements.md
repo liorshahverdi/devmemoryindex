@@ -19,7 +19,7 @@ Prioritize the improvements that unblock reliable day-to-day use from Hermes and
 
 1. **Lazy-load embeddings and heavy dependencies** so MCP startup, CLI help, and lightweight metadata operations do not pay the embedding-model import cost.
 2. **Native Linux daemon install/status/uninstall** so Linux users can run always-on indexing with `systemd --user` without hand-written service files.
-3. **Packaging cleanup for the MCP dependency** so `devmemory-mcp-server` works from a normal install and clearly declares the optional/runtime packages it needs.
+3. **Packaging cleanup for the MCP dependency** so `devmemory-mcp-server` works from a normal install and clearly declares the optional/runtime packages it needs. ✅ Implemented in this branch.
 4. **Agent-optimized MCP tool descriptions** so Hermes and other coding agents choose the right memory tools and avoid low-value writes or duplicate native-memory behavior.
 
 The remaining sections are still valuable follow-ups, but these four are the tightest first implementation scope for this PR series.
@@ -162,55 +162,35 @@ exec /path/to/devmemoryindex/.venv/bin/python -m mcp_server.server
 
 ### Problem
 
-During install, pip emitted:
+Current MCP SDK releases do not expose a `server` extra, so DevMemoryIndex should depend on the base MCP SDK package directly and avoid confusing stale-extra install warnings.
 
-```text
-WARNING: mcp 1.28.0 does not provide the extra 'server'
-```
+Hermes and other MCP clients also need a stable command they can run after a normal package install, rather than requiring every user to hand-write a wrapper around `python -m mcp_server.server`.
 
-The current optional dependency is:
+### Implemented behavior
 
-```toml
-mcp = ["mcp[server]>=1.0"]
-```
-
-If the installed MCP package no longer exposes a `server` extra, this warning creates confusion and may make users suspect the MCP install is incomplete even when it works.
-
-### Desired behavior
-
-Use dependency specifiers that reflect the current MCP SDK packaging.
-
-### Proposed implementation
-
-- Verify current supported MCP SDK extras from the installed package metadata and upstream docs.
-- If no `server` extra exists, change:
+The branch now declares the MCP extra and console script as:
 
 ```toml
-mcp = ["mcp[server]>=1.0"]
-```
+[project.scripts]
+devmemory-mcp-server = "mcp_server.server:main"
 
-to:
-
-```toml
+[project.optional-dependencies]
 mcp = ["mcp>=1.0"]
 ```
 
-- Add a minimal import test:
+`mcp_server.server` exposes `main()`, so normal installs provide a `devmemory-mcp-server` stdio command for Hermes Agent, Claude Code, and generic MCP clients.
 
-```python
-from mcp.server.fastmcp import FastMCP
-```
+### Verification
 
-- Document the expected installed version range if there are API compatibility constraints.
-
-### Tests
-
-- Add a smoke test that imports `mcp_server.server`.
-- Add a packaging or CI install test for `.[mcp]`.
+- `tests/test_packaging.py` asserts the MCP optional dependency is `mcp>=1.0`.
+- `tests/test_packaging.py` asserts the `devmemory-mcp-server` console script points at `mcp_server.server:main`.
+- Editable install verification with `pip install -e '.[mcp]'` completed without stale-extra warnings.
+- Runtime verification imported `mcp.server.fastmcp.FastMCP` and `mcp_server.server.main` from the installed environment.
 
 ### Acceptance criteria
 
 - Installing `devmemoryindex[mcp]` produces no stale-extra warning.
+- Normal installs expose a `devmemory-mcp-server` command.
 - MCP server import succeeds in CI.
 - README install instructions match `pyproject.toml`.
 

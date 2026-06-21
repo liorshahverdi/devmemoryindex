@@ -501,6 +501,7 @@ uv run pytest core/tests/test_ranking.py -v
 uv run pytest core/tests/test_context_engine.py -v
 uv run pytest api/tests/test_auth.py -v
 uv run pytest daemon/tests/ -v        # Phase 8 voice pipeline + formatter tests
+uv run pytest tests/test_packaging.py -v
 ```
 **Expect:** All green.
 

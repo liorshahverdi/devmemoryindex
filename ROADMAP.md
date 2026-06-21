@@ -87,7 +87,7 @@ This file is a historical master roadmap and contains implementation notes from 
 | `daemon/jobs/memory_cleanup.py` | **Done** | `prune_memories()` — removes importance < 0.05 OR (age > 90 days AND importance < 0.15). |
 | `daemon/jobs/importance_decay.py` | **Done** | `decay_importance(factor=0.99)` — daily decay on all non-pinned memories. |
 | `scripts/truncate_memories.py` | **Done** | Standalone bulk-delete CLI with `--filter-repo`, `--dry-run`, `--yes` confirmation. |
-| `pyproject.toml` | **Done** | `[project.scripts]` registered, hatchling build, dev deps + `[voice]` optional extras configured. |
+| `pyproject.toml` | **Done** | `[project.scripts]` registered (`devmemory`, `devmemory-mcp-server`), hatchling build, dev deps + optional extras configured. |
 | Project structure | **Done** | `core/`, `connectors/`, `cli/`, `api/`, `daemon/`, `scripts/` directories |
 | LanceDB with explicit schema + timestamp("us") | **Done** | Proper Arrow types, 384-dim vector field |
 | `connectors/filesystem_connector.py` | **Done** | Indexes code files from configured scan dirs. Language-aware importance: Python/TS/Go=0.7, others=0.5. Skips binaries, hidden dirs, `.gitignore` patterns. `devmemory config add-fs <dir>` to configure. **Stale chunk eviction:** on each re-index run, chunks stored for the file that no longer match current content are deleted automatically. Eliminates ghost chunks from old code versions. |
@@ -3032,7 +3032,7 @@ devmemory prune --floor 0.1 --age 60    # stricter thresholds
 >
 > **Why MCP before REST:** An agent calling `memory_search` via MCP requires zero server setup. The MCP server is spawned on-demand by Claude Code. REST requires a persistent `uvicorn` process and port management. For same-machine agent integration, MCP is strictly better.
 >
-> **All local. No cloud.** Uses `mcp[server]` (pure-Python PyPI package, stdio transport).
+> **All local. No cloud.** Uses `mcp>=1.0` (pure-Python PyPI package, stdio transport).
 
 ### 4A.1 MCP Server Setup
 
@@ -3049,7 +3049,7 @@ mcp_server/
 ```toml
 # pyproject.toml
 [project.optional-dependencies]
-mcp = ["mcp[server]>=1.0"]
+mcp = ["mcp>=1.0"]
 ```
 Install: `uv pip install "devmemoryindex[mcp]"`
 
