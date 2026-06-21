@@ -4,3 +4,4 @@ __pycache__
 :memory:
 memory_db/
 .claude/
+.DS_Store
