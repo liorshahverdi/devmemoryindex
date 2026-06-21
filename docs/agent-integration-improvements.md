@@ -2,7 +2,7 @@
 
 This document captures follow-up improvements discovered while installing DevMemoryIndex for multiple local repositories, running it as a Linux daemon, and registering it as a Hermes Agent MCP server.
 
-The goal is to make DevMemoryIndex more reliable and ergonomic for long-running AI coding agents such as Hermes Agent, Claude Code, Codex-style CLIs, and other MCP-compatible tools.
+The goal is to make DevMemoryIndex more reliable and ergonomic for long-running AI coding agents, especially Hermes Agent and OpenAI/Pi-style coding workflows that need a shared project memory layer. Claude Code remains a useful optional connector target, but this roadmap should not assume Claude Code is the primary user workflow.
 
 ## Goals
 
@@ -12,6 +12,17 @@ The goal is to make DevMemoryIndex more reliable and ergonomic for long-running 
 - Improve connector observability, performance, and failure recovery.
 - Shape MCP tool descriptions and workflows around how autonomous coding agents actually use memory.
 - Avoid memory pollution while still capturing durable, high-signal lessons.
+
+## Initial PR focus
+
+Prioritize the improvements that unblock reliable day-to-day use from Hermes and similar MCP clients:
+
+1. **Lazy-load embeddings and heavy dependencies** so MCP startup, CLI help, and lightweight metadata operations do not pay the embedding-model import cost.
+2. **Native Linux daemon install/status/uninstall** so Linux users can run always-on indexing with `systemd --user` without hand-written service files.
+3. **Packaging cleanup for the MCP dependency** so `devmemory-mcp-server` works from a normal install and clearly declares the optional/runtime packages it needs.
+4. **Agent-optimized MCP tool descriptions** so Hermes and other coding agents choose the right memory tools and avoid low-value writes or duplicate native-memory behavior.
+
+The remaining sections are still valuable follow-ups, but these four are the tightest first implementation scope for this PR series.
 
 ## 1. Native Linux daemon install/status/uninstall
 
@@ -439,15 +450,20 @@ Before modifying this repo, use DevMemoryIndex to retrieve relevant context for:
 
 ## Suggested priority order
 
+### Initial PR series
+
 1. Lazy-load embeddings and heavy dependencies.
 2. Native Linux daemon install/status/uninstall.
 3. Packaging cleanup for MCP dependency.
 4. Agent-optimized MCP tool descriptions.
+
+### Follow-up work
+
 5. Hermes-specific agent start workflow.
 6. Better non-interactive MCP registration.
 7. Filesystem connector performance and resilience.
 
-This order prioritizes reliability and installability first, then improves agent behavior and connector scalability.
+This order prioritizes startup reliability, installability, MCP packaging correctness, and agent tool-choice quality first. Those are the highest-leverage improvements for a Hermes + OpenAI/Pi coding-agent workflow because they make DevMemoryIndex dependable as an always-on shared project-memory service before expanding connector scope.
 
 ## Notes from verified local setup
 
