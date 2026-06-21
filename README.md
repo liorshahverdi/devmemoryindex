@@ -246,12 +246,45 @@ devmemory daemon install
 devmemory daemon uninstall
 
 # Check service status
+# Note: the built-in status/install helpers are macOS launchd-focused today.
 devmemory daemon status
 
 # View recent daemon log
 devmemory log
 devmemory log --lines 50
 ```
+
+### Linux user service with systemd
+
+On Linux, run the daemon as a user-level systemd service until a native
+`devmemory daemon install` implementation is added for systemd:
+
+```ini
+# ~/.config/systemd/user/devmemory.service
+[Unit]
+Description=DevMemoryIndex background daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/devmemoryindex
+ExecStart=/path/to/devmemoryindex/.venv/bin/devmemory daemon start
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now devmemory.service
+systemctl --user status devmemory.service
+```
+
+The daemon log is still available through `devmemory log`.
 
 ---
 
@@ -336,9 +369,14 @@ open http://localhost:7711/docs
 
 ---
 
-## MCP Server (Claude Code integration)
+## MCP Server (agent integrations)
 
-DevMemoryIndex exposes a Model Context Protocol server so Claude Code can query your memories directly.
+DevMemoryIndex exposes a Model Context Protocol server so MCP-compatible coding
+agents can query and update your memories directly. The server uses stdio
+transport, so the MCP client starts it on demand; you do not need to run a
+separate long-lived MCP process.
+
+### Claude Code
 
 Add to `~/.claude/settings.json`:
 
@@ -347,11 +385,34 @@ Add to `~/.claude/settings.json`:
   "mcpServers": {
     "devmemory": {
       "command": "uv",
-      "args": ["run", "--project", "/path/to/devmemoryindex", "python", "-m", "mcp_server"]
+      "args": ["run", "--project", "/path/to/devmemoryindex", "python", "-m", "mcp_server.server"]
     }
   }
 }
 ```
+
+### Hermes Agent
+
+Hermes has a native MCP client. A wrapper script avoids argument parsing issues
+with `python -m` and keeps the working directory stable:
+
+```bash
+cat > ~/.local/bin/devmemory-mcp-server <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd /path/to/devmemoryindex
+exec /path/to/devmemoryindex/.venv/bin/python -m mcp_server.server
+EOF
+chmod +x ~/.local/bin/devmemory-mcp-server
+
+hermes mcp add devmemory --command ~/.local/bin/devmemory-mcp-server
+hermes mcp test devmemory
+```
+
+After adding the MCP server, start a new Hermes session or restart the gateway
+so the discovered tools are available to the agent.
+
+### Available tools
 
 **19 MCP tools available:**
 
