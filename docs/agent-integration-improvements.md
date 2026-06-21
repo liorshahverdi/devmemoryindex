@@ -175,17 +175,22 @@ The branch now declares the MCP extra and console script as:
 devmemory-mcp-server = "mcp_server.server:main"
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.0"]
+mcp = [
+    "mcp>=1.0",
+    "lancedb",
+    "sentence-transformers",
+]
 ```
 
-`mcp_server.server` exposes `main()`, so normal installs provide a `devmemory-mcp-server` stdio command for Hermes Agent, Claude Code, and generic MCP clients.
+`mcp_server.server` exposes `main()`, so normal installs provide a `devmemory-mcp-server` stdio command for Hermes Agent, Claude Code, and generic MCP clients. The MCP extra also includes the runtime imports the server currently needs during startup.
 
 ### Verification
 
-- `tests/test_packaging.py` asserts the MCP optional dependency is `mcp>=1.0`.
+- `tests/test_packaging.py` asserts the MCP optional dependency uses `mcp>=1.0` without the stale `mcp[server]` extra.
+- `tests/test_packaging.py` asserts the MCP extra includes current startup/runtime imports (`lancedb` and `sentence-transformers`).
 - `tests/test_packaging.py` asserts the `devmemory-mcp-server` console script points at `mcp_server.server:main`.
 - Editable install verification with `pip install -e '.[mcp]'` completed without stale-extra warnings.
-- Runtime verification imported `mcp.server.fastmcp.FastMCP` and `mcp_server.server.main` from the installed environment.
+- Wheel metadata verification asserts the MCP extra and console script are present in the built artifact.
 
 ### Acceptance criteria
 

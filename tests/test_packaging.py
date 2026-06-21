@@ -15,7 +15,16 @@ def test_mcp_optional_dependency_uses_current_sdk_package_name():
     """The MCP SDK no longer publishes a `server` extra; avoid stale-extra warnings."""
     optional_deps = _pyproject()["project"]["optional-dependencies"]
 
-    assert optional_deps["mcp"] == ["mcp>=1.0"]
+    assert "mcp>=1.0" in optional_deps["mcp"]
+    assert all(not dep.startswith("mcp[") for dep in optional_deps["mcp"])
+
+
+def test_mcp_optional_dependency_includes_runtime_import_dependencies():
+    """A normal MCP install should include imports needed by mcp_server.server."""
+    optional_deps = _pyproject()["project"]["optional-dependencies"]
+
+    assert "lancedb" in optional_deps["mcp"]
+    assert "sentence-transformers" in optional_deps["mcp"]
 
 
 def test_mcp_server_has_console_script_entry_point():
