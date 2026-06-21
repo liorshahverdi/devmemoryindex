@@ -41,18 +41,36 @@ def stop():
 
 
 @app.command("install")
-def install():
-    """Install as a macOS launchd service (auto-starts at login)."""
+def install(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the service definition without writing files or enabling it.",
+    ),
+):
+    """Install as a native user service (systemd on Linux, launchd on macOS)."""
     import platform
-    if platform.system() != "Darwin":
-        console.print("[red]launchd is macOS-only.[/red]")
-        raise typer.Exit(1)
+    system = platform.system()
     try:
-        from daemon.launchd import install as _install
-        path = _install()
-        console.print(f"[green]Installed and loaded:[/green] {path}")
-        console.print("Daemon will start automatically at login and restart if it crashes.")
-        console.print(f"Logs: [cyan]devmemory log[/cyan]")
+        if system == "Darwin":
+            from daemon.launchd import install as _install
+            result = _install(dry_run=dry_run)
+            if dry_run:
+                console.print(result)
+                return
+            console.print(f"[green]Installed and loaded:[/green] {result}")
+        elif system == "Linux":
+            from daemon.systemd import install as _install
+            result = _install(dry_run=dry_run)
+            if dry_run:
+                console.print(result)
+                return
+            console.print(f"[green]Installed and enabled:[/green] {result}")
+        else:
+            console.print(f"[red]Unsupported daemon platform:[/red] {system}")
+            raise typer.Exit(1)
+        console.print("Daemon will start automatically and restart if it crashes.")
+        console.print("Logs: [cyan]devmemory log[/cyan]")
     except Exception as e:
         console.print(f"[red]Install failed:[/red] {e}")
         raise typer.Exit(1)
@@ -60,33 +78,60 @@ def install():
 
 @app.command("uninstall")
 def uninstall():
-    """Remove the launchd service."""
+    """Remove the native user service."""
     import platform
-    if platform.system() != "Darwin":
-        console.print("[red]launchd is macOS-only.[/red]")
-        raise typer.Exit(1)
-    from daemon.launchd import uninstall as _uninstall, PLIST_PATH
-    if _uninstall():
-        console.print(f"[yellow]Unloaded and removed:[/yellow] {PLIST_PATH}")
+    system = platform.system()
+    if system == "Darwin":
+        from daemon.launchd import uninstall as _uninstall, PLIST_PATH
+        if _uninstall():
+            console.print(f"[yellow]Unloaded and removed:[/yellow] {PLIST_PATH}")
+        else:
+            console.print("[yellow]Not installed — nothing to remove.[/yellow]")
+    elif system == "Linux":
+        from daemon.systemd import uninstall as _uninstall, SERVICE_PATH
+        try:
+            if _uninstall():
+                console.print(f"[yellow]Disabled and removed:[/yellow] {SERVICE_PATH}")
+            else:
+                console.print("[yellow]Not installed — nothing to remove.[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Uninstall failed:[/red] {e}")
+            raise typer.Exit(1)
     else:
-        console.print("[yellow]Not installed — nothing to remove.[/yellow]")
+        console.print(f"[red]Unsupported daemon platform:[/red] {system}")
+        raise typer.Exit(1)
 
 
 @app.command("status")
 def status():
-    """Show whether the launchd service is installed and running."""
+    """Show whether the native user service is installed and running."""
     import platform
-    if platform.system() != "Darwin":
-        console.print("[red]launchd is macOS-only.[/red]")
-        raise typer.Exit(1)
-    from daemon.launchd import status as _status
     from rich.table import Table
-    s = _status()
+
+    system = platform.system()
+    if system == "Darwin":
+        from daemon.launchd import status as _status
+        s = _status()
+        location_label = "Plist"
+        location_value = s["plist"]
+    elif system == "Linux":
+        from daemon.systemd import status as _status
+        s = _status()
+        location_label = "Service"
+        location_value = s["service"]
+    else:
+        console.print(f"[red]Unsupported daemon platform:[/red] {system}")
+        raise typer.Exit(1)
+
     table = Table(title="Daemon Status")
     table.add_column("Field")
     table.add_column("Value")
+    table.add_row("Backend", "systemd --user" if system == "Linux" else "launchd")
     table.add_row("Installed", "[green]yes[/green]" if s["installed"] else "[red]no[/red]")
     table.add_row("Running",   "[green]yes[/green]" if s["running"]   else "[red]no[/red]")
-    table.add_row("PID",       str(s["pid"]) if s["pid"] else "—")
-    table.add_row("Plist",     s["plist"])
+    if system == "Darwin":
+        table.add_row("PID", str(s["pid"]) if s["pid"] else "—")
+    else:
+        table.add_row("Active State", s["active_state"])
+    table.add_row(location_label, location_value)
     console.print(table)

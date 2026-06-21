@@ -71,11 +71,15 @@ def _plist_xml() -> str:
 """
 
 
-def install() -> str:
-    """Write the plist and load it. Returns the plist path."""
+def install(dry_run: bool = False) -> str:
+    """Write the plist and load it. Returns the plist path, or plist XML for dry-run."""
+    plist = _plist_xml()
+    if dry_run:
+        return plist
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PLIST_PATH.write_text(_plist_xml())
+    PLIST_PATH.write_text(plist)
 
     # Unload first in case an older version is already loaded
     subprocess.run(

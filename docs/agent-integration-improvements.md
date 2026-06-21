@@ -18,7 +18,7 @@ The goal is to make DevMemoryIndex more reliable and ergonomic for long-running 
 Prioritize the improvements that unblock reliable day-to-day use from Hermes and similar MCP clients:
 
 1. **Lazy-load embeddings and heavy dependencies** so MCP startup, CLI help, and lightweight metadata operations do not pay the embedding-model import cost.
-2. **Native Linux daemon install/status/uninstall** so Linux users can run always-on indexing with `systemd --user` without hand-written service files.
+2. **Native Linux daemon install/status/uninstall** so Linux users can run always-on indexing with `systemd --user` without hand-written service files. ✅ Implemented in this branch.
 3. **Packaging cleanup for the MCP dependency** so `devmemory-mcp-server` works from a normal install and clearly declares the optional/runtime packages it needs. ✅ Implemented in this branch.
 4. **Agent-optimized MCP tool descriptions** so Hermes and other coding agents choose the right memory tools and avoid low-value writes or duplicate native-memory behavior.
 
@@ -26,70 +26,29 @@ The remaining sections are still valuable follow-ups, but these four are the tig
 
 ## 1. Native Linux daemon install/status/uninstall
 
-### Problem
+### Implemented behavior
 
-`devmemory daemon install`, `devmemory daemon status`, and `devmemory daemon uninstall` are currently macOS launchd-oriented. On Linux, a user has to create a systemd user service manually.
+`devmemory daemon install`, `devmemory daemon status`, and
+`devmemory daemon uninstall` now dispatch to the native service manager for the
+current platform:
 
-This works, but it is not discoverable and makes always-on indexing harder for agent environments running on Linux boxes, cloud VMs, WSL machines with systemd, or homelab servers.
+- Linux uses a `systemd --user` service at `~/.config/systemd/user/devmemory.service`.
+- macOS keeps the existing launchd LaunchAgent behavior.
+- `devmemory daemon install --dry-run` prints the generated unit without writing
+  files or running `systemctl`, which makes service generation easy to inspect
+  and test in CI.
 
-### Desired behavior
+The Linux service uses the resolved `devmemory` executable, starts
+`devmemory daemon start`, restarts on failure, and appends stdout/stderr to the
+normal DevMemoryIndex daemon logs.
 
-Add first-class Linux support:
+### Verification
 
-```bash
-devmemory daemon install
-# Detect Linux + systemd user session
-# Write ~/.config/systemd/user/devmemory.service
-# systemctl --user daemon-reload
-# systemctl --user enable --now devmemory.service
-
-devmemory daemon status
-# Show systemctl --user status devmemory.service on Linux
-# Show launchctl status on macOS
-
-devmemory daemon uninstall
-# systemctl --user disable --now devmemory.service
-# Remove service file
-```
-
-### Proposed implementation
-
-- Detect OS with `platform.system()`.
-- On Linux, detect systemd user availability using:
-
-```bash
-systemctl --user is-system-running
-```
-
-- Generate a service similar to:
-
-```ini
-[Unit]
-Description=DevMemoryIndex background daemon
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/path/to/devmemoryindex
-ExecStart=/path/to/devmemoryindex/.venv/bin/devmemory daemon start
-Restart=on-failure
-RestartSec=10
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=default.target
-```
-
-- Resolve `ExecStart` from the active `devmemory` executable path rather than assuming `.venv`.
-- Warn if `systemctl --user` is unavailable.
-- Include a `--print-service` or `--dry-run` option for debugging.
-
-### Tests
-
-- Unit-test service file generation.
-- Unit-test Linux/macOS dispatch without requiring a real systemd daemon.
-- Add integration-style tests gated by `systemctl --user` availability.
+- `daemon/tests/test_systemd.py` covers service unit rendering, install,
+  dry-run, uninstall, status, and `systemctl --user` failure handling without
+  requiring a real systemd daemon.
+- `cli/commands/daemon_cmd.py` dispatches install/status/uninstall by platform
+  and keeps macOS launchd behavior unchanged.
 
 ### Acceptance criteria
 
@@ -437,9 +396,9 @@ Before modifying this repo, use DevMemoryIndex to retrieve relevant context for:
 
 ### Initial PR series
 
-1. Lazy-load embeddings and heavy dependencies.
-2. Native Linux daemon install/status/uninstall.
-3. Packaging cleanup for MCP dependency.
+1. Lazy-load embeddings and heavy dependencies. ✅ Implemented
+2. Native Linux daemon install/status/uninstall. ✅ Implemented
+3. Packaging cleanup for MCP dependency. ✅ Implemented
 4. Agent-optimized MCP tool descriptions.
 
 ### Follow-up work
