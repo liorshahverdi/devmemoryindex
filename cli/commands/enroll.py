@@ -3,8 +3,6 @@ import time
 import typer
 from rich.console import Console
 
-from core.speaker_profile import save_profile, PROFILE_PATH
-
 SAMPLE_RATE = 16000
 DURATION = 30  # seconds — enough for a robust embedding
 
@@ -39,6 +37,14 @@ def enroll():
         embedding = _extract_embedding(f.name)
 
     user_name = typer.prompt("Your name (used for speaker tagging in meeting transcripts)", default="").strip() or None
+    try:
+        from core.speaker_profile import save_profile, PROFILE_PATH
+    except ImportError:
+        console.print(
+            "[red]Voice profile dependencies not installed.[/red] "
+            "Run: [bold]uv pip install 'devmemoryindex[voice]'[/bold]"
+        )
+        raise typer.Exit(1)
     save_profile(embedding, user_name=user_name)
     if user_name:
         console.print(f"[green]Voiceprint saved to {PROFILE_PATH}[/green] (enrolled as [bold]{user_name}[/bold])")

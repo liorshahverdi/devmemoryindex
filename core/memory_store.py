@@ -555,14 +555,47 @@ class MemoryStore:
 
         return top
 
+    def _resolve_id(self, memory_id: str) -> str | None:
+        """Resolve an exact ID or a unique short prefix to the canonical full ID."""
+        safe_id = memory_id.replace("'", "''")
+        try:
+            exact = (
+                self.collection
+                .search()
+                .where(f"id = '{safe_id}'")
+                .limit(1)
+                .to_list()
+            )
+            if exact:
+                return exact[0]["id"]
+
+            # Search output displays 8-character prefixes; accept any unique
+            # prefix users copy from that table, but refuse ambiguous prefixes.
+            if len(memory_id) >= 8:
+                prefix_results = (
+                    self.collection
+                    .search()
+                    .where(f"id LIKE '{safe_id}%'")
+                    .limit(2)
+                    .to_list()
+                )
+                if len(prefix_results) == 1:
+                    return prefix_results[0]["id"]
+        except Exception:
+            return None
+        return None
+
     def get_by_id(self, memory_id: str, reinforce: bool = True) -> dict | None:
-        """Fetch a single memory by exact ID.
+        """Fetch a single memory by exact ID or unique short prefix.
 
         Reinforces importance by a small amount when reinforce=True (default) —
         an explicit fetch is a strong signal that this memory is useful.
-        Returns None if not found.
+        Returns None if not found or if a prefix matches multiple memories.
         """
-        safe_id = memory_id.replace("'", "''")
+        resolved_id = self._resolve_id(memory_id)
+        if resolved_id is None:
+            return None
+        safe_id = resolved_id.replace("'", "''")
         try:
             results = (
                 self.collection
@@ -574,8 +607,8 @@ class MemoryStore:
             if not results:
                 return None
             if reinforce:
-                self.reinforce(memory_id, boost=0.02)
-                self._increment_counter(memory_id, "times_accessed")
+                self.reinforce(resolved_id, boost=0.02)
+                self._increment_counter(resolved_id, "times_accessed")
             return results[0]
         except Exception:
             return None

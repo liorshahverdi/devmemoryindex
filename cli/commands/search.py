@@ -5,6 +5,7 @@ from rich.console import Console
 from rich.table import Table
 from core.store_provider import get_store
 from core.embeddings import embed
+from cli.commands._errors import exit_on_runtime_error
 
 console = Console()
 
@@ -35,8 +36,11 @@ def search(
     from core.intent_classifier import classify_intent
     intent_label, routing = classify_intent(query)
 
-    store = get_store()
-    vector = embed(query)
+    try:
+        store = get_store()
+        vector = embed(query)
+    except RuntimeError as exc:
+        exit_on_runtime_error(exc)
     results = store.hybrid_search(
         query, vector, k=k,
         type_filter=memory_type,

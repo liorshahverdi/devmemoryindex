@@ -13,10 +13,14 @@ DOES NOT:
 - Estimate tokens (delegated)
 """
 
-from core.memory_store import MemoryStore
+from typing import TYPE_CHECKING
+
 from core.embeddings import embed
 from core.token_budget import pack_within_budget
 import logging
+
+if TYPE_CHECKING:
+    from core.memory_store import MemoryStore
 try:
     from core.ml_intent_classifier import classify_intent_ml as classify_intent
 except ImportError:
@@ -31,7 +35,7 @@ from core.context_cache import cache as _cache
 
 class ContextEngine:
 
-    def __init__(self, store: MemoryStore):
+    def __init__(self, store: "MemoryStore"):
         self.store = store
 
     def build(

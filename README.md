@@ -86,11 +86,12 @@ devmemory search "redis fix" --speak
 ### `add` — Manually store a memory
 
 ```bash
-# Paste a solution, note, or command interactively
-devmemory add
+# Provide a concise summary inline
+# (the same text is stored as both summary and raw text)
+devmemory add "Set X-Forwarded-Host header in nginx"
 
-# Provide inline
-devmemory add --summary "Proxy fix" --raw "Set X-Forwarded-Host header in nginx"
+# Add metadata
+devmemory add "Proxy fix" --type agent_solution --repo api-gateway --importance 0.8
 ```
 
 ### `get` — Inspect a single memory
@@ -143,7 +144,7 @@ devmemory stats
 devmemory prune --dry-run
 
 # Remove memories below importance threshold
-devmemory prune --min-importance 0.3
+devmemory prune --floor 0.3
 ```
 
 ### `health` — Store quality dashboard
