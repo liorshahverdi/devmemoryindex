@@ -4,7 +4,7 @@ A persistent developer memory store that captures, indexes, and semantically sea
 
 ## Overview
 
-DevMemoryIndex turns your day-to-day development activity into a searchable, vector-indexed knowledge base. Memories are stored with rich metadata and retrieved via hybrid search (semantic similarity + keyword matching). It runs as a local daemon, exposes a REST API for cross-machine access, and integrates directly into Claude Code via MCP.
+DevMemoryIndex turns your day-to-day development activity into a searchable, vector-indexed knowledge base. Memories are stored with rich metadata and retrieved via hybrid search (semantic similarity + keyword matching). It runs as a local daemon, exposes a REST API for cross-machine access, and integrates with Hermes Agent, Claude Code, and other MCP-compatible coding agents via stdio MCP.
 
 ```
 core/         Storage engine, embeddings, hybrid search, config, edge graph
@@ -25,6 +25,14 @@ uv sync --group dev
 ```
 
 The `devmemory` CLI is available via `uv run devmemory` or add it to your PATH.
+
+For an installable CLI in a virtualenv, use:
+
+```bash
+uv pip install -e '.[mcp,watch,ml,llm]'
+```
+
+> Current packaging note: `pyproject.toml` still declares `mcp = ["mcp[server]>=1.0"]`, but current MCP SDK releases no longer publish a `server` extra. If pip warns that `mcp` does not provide the `server` extra, install is still expected to work once `mcp>=1.0` is present. The cleanup is tracked in `docs/agent-integration-improvements.md`.
 
 ---
 
@@ -376,9 +384,30 @@ agents can query and update your memories directly. The server uses stdio
 transport, so the MCP client starts it on demand; you do not need to run a
 separate long-lived MCP process.
 
+### Hermes Agent
+
+Hermes has a native MCP client. A wrapper script avoids argument parsing issues
+with `python -m` and keeps the working directory stable:
+
+```bash
+cat > ~/.local/bin/devmemory-mcp-server <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd /path/to/devmemoryindex
+exec /path/to/devmemoryindex/.venv/bin/python -m mcp_server.server
+EOF
+chmod +x ~/.local/bin/devmemory-mcp-server
+
+hermes mcp add devmemory --command ~/.local/bin/devmemory-mcp-server
+hermes mcp test devmemory
+```
+
+After adding the MCP server, start a new Hermes session or restart the gateway
+so the discovered tools are available to the agent.
+
 ### Claude Code
 
-Add to `~/.claude/settings.json`:
+Claude Code is also supported as an MCP client. Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -413,6 +442,8 @@ After adding the MCP server, start a new Hermes session or restart the gateway
 so the discovered tools are available to the agent.
 
 ### Available tools
+
+The MCP server currently registers 19 tools. Agent-facing descriptions should remain concise and operational because they are loaded into MCP clients as tool schemas.
 
 **19 MCP tools available:**
 

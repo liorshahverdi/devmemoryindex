@@ -13,15 +13,17 @@ agent via stdio transport. The server currently registers tools for:
 Transport: stdio (spawned on demand by the MCP client; no persistent MCP server
 process is required).
 
-Claude Code registration (project-local):
-    claude mcp add devmemory -s local -- uv run python -m mcp_server.server
-
 Hermes Agent registration:
     hermes mcp add devmemory --command /path/to/devmemory-mcp-server
 
-Config file: .mcp.json (project root) — used by Claude Code to auto-discover the server.
-Verify in Claude Code: run /mcp — devmemory should appear as connected.
+Claude Code registration (project-local, optional):
+    claude mcp add devmemory -s local -- uv run python -m mcp_server.server
+
+Generic MCP clients can use the same stdio command or wrapper script.
+
+Config file: .mcp.json (project root) — useful for clients that auto-discover project MCP servers.
 Verify in Hermes: run `hermes mcp test devmemory` — all registered tools should be discovered.
+Verify in Claude Code: run /mcp — devmemory should appear as connected.
 
 Note: directory is named mcp_server/ (not mcp/) to avoid shadowing the mcp PyPI package.
 """

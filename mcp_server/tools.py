@@ -2,8 +2,8 @@
 MCP tool implementations for DevMemoryIndex.
 
 These functions are exposed as MCP tools via mcp_server/server.py.
-Their docstrings are what Claude sees as the tool description — keep them
-precise and action-oriented.
+Their docstrings are what MCP clients expose as tool descriptions — keep them
+precise, action-oriented, and agent-agnostic.
 
 Tool summary:
   search_memories      — hybrid search (semantic + keyword) over the memory store
@@ -56,7 +56,7 @@ def search_memories(
         k:           Max number of results to return. Default 5.
         memory_type: Optional filter by memory type. Common values:
                        "git_commit"     — indexed commit messages
-                       "agent_solution" — solutions persisted by Claude via remember_memory
+                       "agent_solution" — solutions persisted by MCP agents via remember_memory
                        "voice_note"     — dictated voice memories
         repo:        Optional filter by repository name (e.g. "devmemoryindex").
         speaker:     Optional filter by speaker name (e.g. "Sarah" or "self").
@@ -114,7 +114,7 @@ def build_context(
         max_tokens: Token budget for the returned context block. Default 4000.
         repo:       Optional filter to restrict context to a single repository.
         format:     Output format. Options:
-                      "claude"   — <context>...</context> XML block (default, best for Claude)
+                      "claude"   — <context>...</context> XML block (default; useful for XML-friendly agents)
                       "markdown" — ### Relevant Past Solutions header with bullet list
                       "raw"      — plain text, one summary per line
         intent:     Optional intent override to control result weighting. Options:

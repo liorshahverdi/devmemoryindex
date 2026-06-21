@@ -8,6 +8,12 @@
 
 ---
 
+## Documentation freshness note
+
+This file is a historical master roadmap and contains implementation notes from earlier phases. For current MCP/Hermes/Linux-daemon follow-up priorities, see `docs/agent-integration-improvements.md`. When this file describes Claude Code integration, treat it as one supported MCP client rather than the primary workflow.
+
+---
+
 ## Current State (Completed)
 
 | Component | Status | Notes |
@@ -58,7 +64,7 @@
 | `core/context_cache.py` | **Done** | Phase 5.B. Module-level LRU cache (50 entries, 5-min TTL) for `ContextEngine.build()`. Keyed on `sha256(query\|repo\|format\|intent)`. Auto-invalidated via `store.add()`. Context response includes `cached: true/false`. |
 | `daemon/jobs/dedup.py` | **Done** | Phase 5.C. Groups memories by `summary[:100].lower()`, keeps highest-importance duplicate, deletes the rest. Runs weekly (Mondays) in daemon scheduler. |
 | `core/memory_store.py` — get_by_id | **Done** | `get_by_id(memory_id)` — fetch a single memory by exact ID. Used to resolve `related[]` links from search results. |
-| `mcp_server/server.py` | **Done** | FastMCP entrypoint, stdio transport, registered with Claude Code via `claude mcp add`. **10 tools.** Instructions updated to guide agents on when to use each tool. |
+| `mcp_server/server.py` | **Done** | FastMCP stdio entrypoint for Hermes Agent, Claude Code, and generic MCP clients. **19 tools.** Instructions guide agents on when to search, build context, write memories, diagnose scores, and maintain memory quality. |
 | `mcp_server/tools.py` | **Done** | `search_memories` (DB-level type/repo filters, returns `id`, `related[]`, `times_retrieved`, `times_accessed`), `build_context`, `remember_memory`, `get_memory`, `get_session_context`, `remember_failure`, `update_memory`, `reinforce_memory`, `get_codebase_map`, `plan_task`. |
 | `mcp_server/tools.py` — engagement fields | **Done** | `search_memories` now returns `times_retrieved` and `times_accessed` per result. Agents can trust solutions with high `times_accessed` relative to `times_retrieved` as proven patterns. |
 | `mcp_server/tools.py` — `update_memory` | **Done** | Corrects or improves a stored memory in-place. Re-embeds when text changes (delete+re-add, preserving counters). Prevents knowledge rot from wrong solutions at high importance. |
