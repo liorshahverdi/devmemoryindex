@@ -6,6 +6,7 @@ from connectors.registry import get_connectors
 from core.config import get_connector_interval
 from daemon.jobs.memory_cleanup import prune_memories
 from daemon.jobs.dedup import dedup_memories
+from daemon.jobs.edge_inference import run_edge_inference
 from daemon.watcher import start_watcher
 import daemon.daemon_log as dlog
 
@@ -69,9 +70,7 @@ def run_daemon(jarvis: bool = False):
             _log(f"Jarvis mode failed to start: {exc}", "WARN")
 
     last_run: dict[str, float] = {}  # connector name → last run timestamp
-    last_prune_date = None
-    last_dedup_date = None
-    last_trim_date = None
+    periodic_state: dict[str, date | None] = {}
 
     while True:
         now = time.time()
@@ -88,29 +87,52 @@ def run_daemon(jarvis: bool = False):
                 _log(f"[{c.name}] Error: {e}", level="ERROR")
             last_run[c.name] = time.time()
 
-        today = date.today()
-
-        if last_prune_date != today:
-            pruned = prune_memories()
-            if pruned > 0:
-                _log(f"Pruned {pruned} underutilized memories")
-            last_prune_date = today
-
-        # Dedup once per week (Monday)
-        if today.weekday() == 0 and last_dedup_date != today:
-            removed = dedup_memories()
-            if removed > 0:
-                _log(f"Dedup removed {removed} duplicate memories")
-            last_dedup_date = today
-
-        # Trim log once per day
-        if last_trim_date != today:
-            removed = dlog.trim()
-            if removed:
-                _log(f"Log trimmed: removed {removed} old lines")
-            last_trim_date = today
+        _run_periodic_jobs(date.today(), periodic_state)
 
         time.sleep(_POLL_INTERVAL)
+
+
+def _run_periodic_jobs(today: date, state: dict[str, date | None]) -> None:
+    """Run date-based daemon maintenance jobs once per configured period.
+
+    Kept separate from the infinite connector loop so scheduling behavior can be
+    regression-tested without sleeping or starting long-lived watchers.
+    """
+    if state.get("last_prune_date") != today:
+        pruned = prune_memories()
+        if pruned > 0:
+            _log(f"Pruned {pruned} underutilized memories")
+        state["last_prune_date"] = today
+
+    # Dedup once per week (Monday)
+    if today.weekday() == 0 and state.get("last_dedup_date") != today:
+        removed = dedup_memories()
+        if removed > 0:
+            _log(f"Dedup removed {removed} duplicate memories")
+        state["last_dedup_date"] = today
+
+    # Infer memory graph edges once per week (Monday), after ingestion has had
+    # time to accumulate commits, failure notes, and agent solutions.
+    if today.weekday() == 0 and state.get("last_edge_inference_date") != today:
+        try:
+            result = run_edge_inference()
+            edges_added = result.get("edges_added", 0)
+            pairs_scanned = result.get("pairs_scanned", 0)
+            if edges_added > 0:
+                _log(
+                    f"Auto-linked {edges_added} memory graph edges "
+                    f"({pairs_scanned} pairs scanned)"
+                )
+        except Exception as exc:
+            _log(f"Edge inference failed: {exc}", level="WARN")
+        state["last_edge_inference_date"] = today
+
+    # Trim log once per day
+    if state.get("last_trim_date") != today:
+        removed = dlog.trim()
+        if removed:
+            _log(f"Log trimmed: removed {removed} old lines")
+        state["last_trim_date"] = today
 
 
 def _fmt_interval(seconds: int) -> str:

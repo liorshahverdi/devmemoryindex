@@ -104,6 +104,19 @@ devmemory get a3f9c12d-4e5f-...
 
 Prints full metadata panel (ID, type, repo, source, importance, tags, timestamp) and the raw content.
 
+### `graph` — Visualize memory relationships
+
+```bash
+# Show typed relationships around a memory
+# Edge types include fixed_by, caused_by, references, supersedes, contradicts, related_to
+devmemory graph a3f9c12d
+
+# Traverse more hops from the root memory
+devmemory graph a3f9c12d --depth 3
+```
+
+Renders a Rich tree plus an edge table using the unified DevMemoryIndex memory graph. The daemon auto-infers new edges weekly from related memories (for example, `failure_note` → `git_commit` as `fixed_by`, and `failure_note` → `agent_solution` as `references`). Graphify-imported codebase nodes can use the same graph once ingested.
+
 ### `context` — Build AI-ready context
 
 Retrieves and formats relevant memories as a context block ready to prepend to an LLM prompt.
@@ -253,7 +266,7 @@ Config is stored at `~/.config/devmemory/config.toml`.
 
 ## Daemon
 
-Runs connectors on their configured schedules and watches markdown directories for live changes.
+Runs connectors on their configured schedules, watches markdown directories for live changes, and periodically infers memory-graph edges between related memories.
 
 ```bash
 # Run in the foreground
@@ -280,6 +293,8 @@ devmemory daemon uninstall
 devmemory log
 devmemory log --lines 50
 ```
+
+The daemon also runs maintenance jobs: daily pruning/log trimming, weekly deduplication, and weekly memory-graph edge inference. Edge inference currently links matching `failure_note` memories to likely fix commits/solutions so `devmemory graph` becomes richer over time.
 
 On Linux, `devmemory daemon install` writes the systemd user service, runs
 `systemctl --user daemon-reload`, and enables it with

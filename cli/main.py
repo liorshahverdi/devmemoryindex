@@ -119,5 +119,9 @@ app.command()(audit)
 from cli.commands.consolidate import consolidate
 app.command()(consolidate)
 
+# T2-A / Phase 8.1: Memory graph visualization
+from cli.commands.graph_cmd import graph
+app.command()(graph)
+
 if __name__ == "__main__":
     app()

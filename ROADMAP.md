@@ -156,16 +156,121 @@ This file is a historical master roadmap and contains implementation notes from 
 | `cli/commands/audit.py` | **Done** | T1-D. `devmemory audit [--purge] [--json]` — shows all deprecated memories with reasons. `--purge` permanently deletes them. |
 | `cli/commands/consolidate.py` | **Done** | T1-C. `devmemory consolidate <id1> <id2> ... [--summary "..."]` — merges memories from CLI. |
 | `daemon/jobs/edge_inference.py` | **Done** | T2-A. Background auto-linking: failure_notes → commits/solutions via keyword overlap (≥2 terms → `fixed_by`, ≥3 → `references`). |
+| `daemon/scheduler.py` — edge inference cadence | **Done** | Phase 8.1 follow-up. Weekly Monday daemon job runs `run_edge_inference()`, logs added edges/pairs scanned, and logs failures without killing the daemon. |
+| `cli/commands/graph_cmd.py` | **Done** | Phase 8.1. `devmemory graph <id> [--depth N]` renders the unified memory graph as a Rich tree plus edge table. |
 
 **Test coverage (post-expansion):**
-- Total: **348 passing, 1 xfailed** across all suites
-- New: `build_context` tests updated for `dict` return + `retrieval_trace` assertion
+- Total: **391 passing, 1 xfailed** across all suites
+- New: `devmemory graph` CLI tests and daemon scheduler edge-inference cadence tests
 
-**What's next:**
-1. **T2-B — macOS Menu Bar** (`daemon/menu_bar.py`, rumps) — visual Jarvis state indicator
-2. **T2-C — Proactive surfacing** (`daemon/watcher.py` expansion) — `git checkout` / test failure triggers
-3. **T3-A — Access-pattern decay** — replace uniform time decay with recency_access_boost
-4. **T2-D / T2-E** — VSCode Extension + Web UI (deferred)
+**What's next (Strategic Priority Order):**
+
+1. **Phase 8.4** — Root Cause Surfacing (`devmemory why`)
+2. **Phase 8.2** — Expand auto-link inference (test failures → commits, stack traces)
+3. **Phase 10.1** — Verify Cursor MCP compatibility
+4. **Phase 9.1** — Wake word activation
+5. **Phase 10.2** — Cross-tool correlation
+
+**Deprioritized:**
+- T2-B macOS Menu Bar — nice-to-have
+- T2-D/E VSCode Extension + Web UI — claude-mem does this better
+
+---
+
+
+## Strategic Differentiation (vs. claude-mem)
+
+> **Positioning**: DevMemoryIndex is a **knowledge graph for your entire development workflow** — not a session replay tool for a single AI assistant.
+
+### Why DevMemoryIndex exists alongside claude-mem
+
+| claude-mem (32k stars) | DevMemoryIndex |
+|------------------------|----------------|
+| Session memory for Claude Code only | Multi-assistant: Claude, Copilot, Cursor, any MCP client |
+| Captures tool observations | Indexes entire workflow: git, terminal, files, meetings, voice |
+| Flat observation timeline | **Typed relationship graph** with causality tracing |
+| AI-compressed summaries | **Score explainability** — understand why results rank |
+| Lifecycle hooks for Claude | Background daemon + filesystem watcher |
+| Web viewer UI | CLI-first, voice-first |
+
+### Core differentiators (amplify these)
+
+1. **Memory Entanglement** — `caused_by`, `fixed_by`, `supersedes` edges; `trace_causality()`
+2. **Multi-Assistant Support** — works with any MCP client, not just Claude Code
+3. **Voice-First Workflow** — wake word, speaker identification, meeting transcripts
+4. **Workflow-Wide Indexing** — 9 connectors vs. Claude-only observations
+5. **Explainability** — `explain_score()`, `why_not_included()`, score breakdowns
+
+### Explicitly deprioritized (claude-mem does these better)
+
+- Session compression / summarization
+- Claude Code lifecycle hooks
+- Web viewer UI
+- Token-cost progressive disclosure
+
+---
+
+## Phase 8 — Knowledge Graph Amplification ⭐ HIGH PRIORITY
+
+> **Goal**: Make the memory graph the killer feature. Surface patterns, trace causality, visualize relationships.
+
+| ID | Feature | File(s) | Description | Status |
+|----|---------|---------|-------------|--------|
+| 8.1 | Graph Visualization CLI | `cli/commands/graph_cmd.py`, `daemon/scheduler.py` | `devmemory graph <id> [--depth N]` — Rich tree showing relationships; daemon auto-links baseline edges weekly | Done |
+| 8.2 | Auto-Link Expansion | `daemon/jobs/edge_inference.py` | Expand to: test failures → commits, similar errors across repos, stack trace matching | Not started |
+| 8.3 | Pattern Detection | `core/pattern_detector.py` | Identify recurring failures: "This error appeared 3x this month, always fixed by X" | Not started |
+| 8.4 | Root Cause Surfacing | `cli/commands/why_cmd.py` | `devmemory why "timeout"` — traces causality, surfaces common root causes | Not started |
+| 8.5 | Graph Export | `cli/commands/export.py` | `devmemory export --graph` — export edges as DOT/JSON for visualization tools | Not started |
+
+---
+
+## Phase 9 — Voice-First Intelligence ⭐ MEDIUM PRIORITY
+
+> **Goal**: Make voice queries a first-class interface, not an afterthought.
+
+| ID | Feature | File(s) | Description | Status |
+|----|---------|---------|-------------|--------|
+| 9.1 | Wake Word Activation | `daemon/wake_word.py` | Always-listening "Hey Devmemory" → instant search | Scaffolded |
+| 9.2 | Meeting Auto-Index | `connectors/meeting_connector.py` | Background recording during meetings, auto-chunk and index with speaker ID | Partial |
+| 9.3 | Voice Query Analytics | `core/voice_analytics.py` | Trending voice queries, common patterns, suggested searches | Not started |
+| 9.4 | Conversational REPL | `cli/commands/voice_repl.py` | Voice-in, voice-out continuous conversation mode | Not started |
+
+---
+
+## Phase 10 — Multi-Tool Intelligence ⭐ MEDIUM PRIORITY
+
+> **Goal**: Be the memory layer that works across *all* your AI tools.
+
+| ID | Feature | File(s) | Description | Status |
+|----|---------|---------|-------------|--------|
+| 10.1 | Cursor MCP Compatibility | `mcp_server/` | Verify/fix MCP server works with Cursor IDE | Not started |
+| 10.2 | Cross-Tool Correlation | `daemon/jobs/cross_tool_linker.py` | Auto-link: Claude solution → Copilot follow-up → commit | Not started |
+| 10.3 | Tool Attribution | `core/schema.py`, `mcp_server/tools.py` | Track which AI tool produced solutions; surface "Copilot better for X" | Not started |
+| 10.4 | Windsurf/Aider Connectors | `connectors/` | Index conversations from other AI coding tools | Not started |
+
+---
+
+## Phase 11 — Workflow Pattern Mining (Future)
+
+> **Goal**: Turn indexed memories into developer productivity insights.
+
+| ID | Feature | Description | Status |
+|----|---------|-------------|--------|
+| 11.1 | Activity Dashboard | Commits/day, debug sessions, common error types | Not started |
+| 11.2 | Time-to-Fix Metrics | How long between failure_note and fix commit (via entanglement) | Not started |
+| 11.3 | Knowledge Decay Alerts | "You haven't touched auth in 6 months — here's context" | Not started |
+| 11.4 | Skill Suggestions | "You debug Redis issues often — consider learning X" | Not started |
+
+---
+
+## Deprioritized / Moved to "Maybe Later"
+
+| Item | Reason |
+|------|--------|
+| T2-D VSCode Extension | Low ROI — MCP server already provides cross-IDE support |
+| T2-E Web UI | claude-mem has this, not differentiating; focus CLI-first |
+| Session compression | claude-mem's core competency, don't compete |
+| T2-B macOS Menu Bar | Nice-to-have, not differentiating |
 
 ---
 
