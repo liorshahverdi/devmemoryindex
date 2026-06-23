@@ -17,6 +17,8 @@ from typing import Any
 
 from connectors.base import Connector
 from core.embeddings import embed_batch
+from core.edge_provider import get_edges
+from core.edge_store import EdgeStore
 from core.schema import Memory
 
 
@@ -47,6 +49,8 @@ class GraphifyConnector(Connector):
         no_report: bool = False,
         no_nodes: bool = False,
         min_degree: int = 0,
+        with_edges: bool = False,
+        edge_store: EdgeStore | None = None,
         dry_run: bool = False,
     ):
         super().__init__()
@@ -58,6 +62,8 @@ class GraphifyConnector(Connector):
         self.no_report = no_report
         self.no_nodes = no_nodes
         self.min_degree = min_degree
+        self.with_edges = with_edges
+        self.edge_store = edge_store
         self.dry_run = dry_run
         self.last_stats = self._new_stats()
 
@@ -67,6 +73,7 @@ class GraphifyConnector(Connector):
             "repo": None,
             "reports": 0,
             "nodes": 0,
+            "edges": 0,
             "skipped": Counter(),
             "errors": 0,
             "dry_run": False,
@@ -90,11 +97,16 @@ class GraphifyConnector(Connector):
 
         if self.dry_run:
             return len(memories)
-        if not memories:
-            return 0
 
-        vectors = embed_batch([f"{m.summary}\n{m.raw_text}" for m in memories])
-        return self.store.add_batch(memories, vectors)
+        if memories:
+            vectors = embed_batch([f"{m.summary}\n{m.raw_text}" for m in memories])
+            added = self.store.add_batch(memories, vectors)
+        else:
+            added = 0
+
+        if self.with_edges and not self.no_nodes:
+            self.last_stats["edges"] = self._ingest_edges()
+        return added
 
     def serializable_stats(self) -> dict:
         return {**self.last_stats, "skipped": dict(self.last_stats.get("skipped", {}))}
@@ -135,11 +147,7 @@ class GraphifyConnector(Connector):
         return memories
 
     def _node_memories(self) -> list[Memory]:
-        try:
-            graph = json.loads(self.graph_path.read_text(errors="ignore"))
-        except json.JSONDecodeError as exc:
-            self.last_stats["errors"] += 1
-            raise ValueError(f"Invalid Graphify graph.json: {exc}") from exc
+        graph = self._load_graph()
 
         nodes = graph.get("nodes") or []
         if not isinstance(nodes, list):
@@ -165,6 +173,48 @@ class GraphifyConnector(Connector):
                 continue
             memories.append(self._memory_for_node(node, node_id, degree, neighbors_by_id.get(node_id, []), timestamp))
         return memories
+
+    def _ingest_edges(self) -> int:
+        graph = self._load_graph()
+        edges = _graph_edges(graph)
+        eligible_node_ids = self._eligible_node_ids(graph, edges)
+        edge_store = self.edge_store or get_edges()
+        added = 0
+        for edge in edges:
+            source = _edge_endpoint(edge, "source", "from")
+            target = _edge_endpoint(edge, "target", "to")
+            if not source or not target:
+                self.last_stats["skipped"]["invalid_edge"] += 1
+                continue
+            if source not in eligible_node_ids or target not in eligible_node_ids:
+                self.last_stats["skipped"]["edge_filtered_node"] += 1
+                continue
+            from_id = _deterministic_node_id(self.repo, source)
+            to_id = _deterministic_node_id(self.repo, target)
+            if edge_store.add_edge(from_id, to_id, _map_edge_type(edge), confidence=1.0, source="graphify"):
+                added += 1
+        return added
+
+    def _eligible_node_ids(self, graph: dict[str, Any], edges: list[dict[str, Any]]) -> set[str]:
+        degree_by_id = _degrees(edges)
+        eligible = set()
+        for node in graph.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id") or node.get("key") or node.get("label") or "").strip()
+            if node_id and degree_by_id.get(node_id, 0) >= self.min_degree:
+                eligible.add(node_id)
+        return eligible
+
+    def _load_graph(self) -> dict[str, Any]:
+        try:
+            graph = json.loads(self.graph_path.read_text(errors="ignore"))
+        except json.JSONDecodeError as exc:
+            self.last_stats["errors"] += 1
+            raise ValueError(f"Invalid Graphify graph.json: {exc}") from exc
+        if not isinstance(graph, dict):
+            raise ValueError("Invalid Graphify graph.json: top-level value must be an object")
+        return graph
 
     def _memory_for_node(self, node: dict[str, Any], node_id: str, degree: int, neighbors: list[str], timestamp: datetime) -> Memory:
         label = str(node.get("label") or node.get("name") or node_id)
@@ -250,11 +300,26 @@ def _endpoint_id(endpoint: Any) -> str:
     return str(endpoint)
 
 
+def _edge_endpoint(edge: dict[str, Any], primary: str, fallback: str) -> str:
+    return _endpoint_id(edge.get(primary) if primary in edge else edge.get(fallback)).strip()
+
+
+def _map_edge_type(edge: dict[str, Any]) -> str:
+    relation = str(edge.get("relation") or edge.get("type") or edge.get("kind") or "").lower()
+    if relation in {"calls", "imports", "imports_from", "contains", "implements", "inherits"}:
+        return "references"
+    if relation in {"semantically_similar_to", "similar", "related_to"}:
+        return "related_to"
+    if relation == "supersedes":
+        return "supersedes"
+    return "related_to"
+
+
 def _degrees(edges: list[dict[str, Any]]) -> Counter:
     counts: Counter = Counter()
     for edge in edges:
-        source = _endpoint_id(edge.get("source"))
-        target = _endpoint_id(edge.get("target"))
+        source = _edge_endpoint(edge, "source", "from")
+        target = _edge_endpoint(edge, "target", "to")
         if source:
             counts[source] += 1
         if target:
@@ -265,8 +330,8 @@ def _degrees(edges: list[dict[str, Any]]) -> Counter:
 def _neighbors(edges: list[dict[str, Any]]) -> dict[str, list[str]]:
     neighbors: dict[str, set[str]] = defaultdict(set)
     for edge in edges:
-        source = _endpoint_id(edge.get("source"))
-        target = _endpoint_id(edge.get("target"))
+        source = _edge_endpoint(edge, "source", "from")
+        target = _edge_endpoint(edge, "target", "to")
         if source and target:
             neighbors[source].add(target)
             neighbors[target].add(source)

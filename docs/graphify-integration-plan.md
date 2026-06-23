@@ -257,19 +257,19 @@ Acceptance criteria:
 - Re-running the command is idempotent.
 - `devmemory search "architecture auth flow" --type graphify_report` returns imported report sections.
 
-## Phase 2 — EdgeStore Integration
+## Phase 2 — EdgeStore Integration ✅ Implemented
 
 Deliverables:
 
-- `--with-edges` support
-- Graphify relation to `EdgeStore` mapping
-- `get_memory_graph` works for Graphify node memories
+- `--with-edges` support ✅
+- Graphify relation to `EdgeStore` mapping ✅
+- `get_memory_graph` works for Graphify node memories ✅
 
 Acceptance criteria:
 
-- Imported nodes are linked according to Graphify edges.
-- `trace_causality` remains unaffected because Graphify references should not pollute causal chains.
-- Edge ingestion is idempotent.
+- Imported nodes are linked according to Graphify edges. ✅
+- `trace_causality` remains unaffected because Graphify references do not use causal edge types. ✅
+- Edge ingestion is idempotent. ✅
 
 ## Phase 3 — Agent-Facing Context
 

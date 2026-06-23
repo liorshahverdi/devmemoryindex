@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from core.edge_store import EdgeStore
 from core.memory_store import MemoryStore
 from connectors.graphify_connector import GraphifyConnector, GraphifyOutputMissingError, _deterministic_node_id
 
@@ -58,6 +59,28 @@ def test_graphify_connector_is_idempotent(monkeypatch, store):
     assert connector.collect() == 6
     assert connector.collect() == 0
     assert len(store.get_all()) == 6
+
+
+def test_graphify_connector_ingests_edges_into_edgestore_idempotently(monkeypatch, store, tmp_path):
+    """--with-edges should map Graphify links to EdgeStore links between imported node memories."""
+    monkeypatch.setattr("connectors.graphify_connector.embed_batch", lambda texts: [[0.1] * 384 for _ in texts])
+    edge_store = EdgeStore(db_path=str(tmp_path / "edges_db"))
+    connector = _connector(store, with_edges=True, edge_store=edge_store)
+
+    assert connector.collect() == 6
+
+    auth_id = _deterministic_node_id("graphify", "auth-service")
+    api_id = _deterministic_node_id("graphify", "api-gateway")
+    graph = edge_store.get_graph(auth_id, depth=2)
+    edge_keys = {(edge["from_id"], edge["to_id"], edge["edge_type"], edge["source"]) for edge in graph["edges"]}
+    assert (api_id, auth_id, "references", "graphify") in edge_keys
+    assert (auth_id, api_id, "references", "graphify") in edge_keys
+    assert set(graph["nodes"]) == {auth_id, api_id}
+    assert connector.serializable_stats()["edges"] == 2
+
+    assert connector.collect() == 0
+    assert len(edge_store.get_all_edges()) == 2
+    assert connector.serializable_stats()["edges"] == 0
 
 
 def test_graphify_connector_min_degree_filters_low_signal_nodes(monkeypatch, store):

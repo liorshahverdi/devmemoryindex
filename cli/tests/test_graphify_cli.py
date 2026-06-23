@@ -44,3 +44,17 @@ def test_graphify_ingest_cli_supports_dry_run(monkeypatch, tmp_path):
     assert "Dry run" in result.output
     assert "nodes=2" in result.output
     assert "reports=0" in result.output
+
+
+def test_graphify_ingest_cli_supports_with_edges(monkeypatch, tmp_path):
+    store = __import__("core.memory_store", fromlist=["MemoryStore"]).MemoryStore(db_path=str(tmp_path / "db"))
+    edge_store = __import__("core.edge_store", fromlist=["EdgeStore"]).EdgeStore(db_path=str(tmp_path / "edges_db"))
+    monkeypatch.setattr("connectors.base.get_store", lambda: store)
+    monkeypatch.setattr("connectors.graphify_connector.get_edges", lambda: edge_store)
+    monkeypatch.setattr("connectors.graphify_connector.embed_batch", lambda texts: [[0.1] * 384 for _ in texts])
+
+    result = runner.invoke(app, ["graphify", "ingest", str(FIXTURE_ROOT), "--repo", "sample-repo", "--with-edges"])
+
+    assert result.exit_code == 0
+    assert "edges=2" in result.output
+    assert len(edge_store.get_all_edges()) == 2
