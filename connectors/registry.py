@@ -7,6 +7,7 @@ from connectors.filesystem_connector import FilesystemConnector
 from connectors.copilot_connector import CopilotConnector
 from connectors.browser_connector import BrowserConnector
 from connectors.meeting_connector import MeetingConnector
+from connectors.markdown_notes_connector import MarkdownNotesApiConnector
 
 # VoiceConnector intentionally excluded from ALL_CONNECTORS.
 # It is triggered only by explicit user commands:
@@ -23,6 +24,7 @@ ALL_CONNECTORS = [
     CopilotConnector,
     BrowserConnector,
     MeetingConnector,
+    MarkdownNotesApiConnector,
     # VoiceConnector — NOT here. Use VoiceConnector() directly in CLI commands.
 ]
 
