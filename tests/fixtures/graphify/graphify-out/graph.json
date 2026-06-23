@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    {
+      "id": "auth-service",
+      "label": "AuthService",
+      "type": "class",
+      "file": "src/auth.py",
+      "community": "backend",
+      "summary": "Coordinates login and session creation"
+    },
+    {
+      "id": "api-gateway",
+      "label": "ApiGateway",
+      "type": "module",
+      "file": "src/api.py",
+      "community": "backend"
+    },
+    {
+      "id": "isolated-helper",
+      "label": "IsolatedHelper",
+      "type": "function",
+      "file": "src/helpers.py",
+      "community": "utilities"
+    }
+  ],
+  "links": [
+    {"source": "api-gateway", "target": "auth-service", "relation": "calls"},
+    {"source": "auth-service", "target": "api-gateway", "relation": "imports"}
+  ]
+}

@@ -229,6 +229,26 @@ devmemory ingest --source meeting
 | `browser` | Browser bookmarks/history metadata (Chrome/Firefox/Safari where available) |
 | `meeting` | Meeting transcripts/recordings from configured directories |
 
+### `graphify ingest` — Import optional Graphify code graph output
+
+Graphify integration is explicit and read-only in Phase 1. DevMemoryIndex does not run Graphify automatically; it imports an existing `graphify-out/` directory into searchable memories.
+
+```bash
+# Imports PATH/graphify-out/GRAPH_REPORT.md and PATH/graphify-out/graph.json
+devmemory graphify ingest PATH
+
+# Useful controls for large graphs or scripting
+devmemory graphify ingest PATH --repo my-app --min-degree 1
+devmemory graphify ingest PATH --dry-run
+devmemory graphify ingest PATH --no-report
+devmemory graphify ingest PATH --no-nodes
+```
+
+Imported memory types:
+
+- `graphify_report` — one memory per `GRAPH_REPORT.md` section
+- `graphify_node` — one memory per selected `graph.json` node
+
 ---
 
 ## Configuration

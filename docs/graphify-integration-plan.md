@@ -241,15 +241,15 @@ raw_text = list of top nodes, source files, and relationships
 
 ## Implementation Phases
 
-## Phase 1 — Read-only Graphify Import
+## Phase 1 — Read-only Graphify Import ✅ Implemented
 
 Deliverables:
 
-- `connectors/graphify_connector.py`
-- `devmemory graphify ingest`
-- Report ingestion from `GRAPH_REPORT.md`
-- Node ingestion from `graph.json`
-- Tests using a small fixture graph
+- `connectors/graphify_connector.py` ✅
+- `devmemory graphify ingest` ✅
+- Report ingestion from `GRAPH_REPORT.md` ✅
+- Node ingestion from `graph.json` ✅
+- Tests using a small fixture graph ✅
 
 Acceptance criteria:
 

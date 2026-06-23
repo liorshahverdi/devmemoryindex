@@ -127,5 +127,9 @@ app.command()(consolidate)
 from cli.commands.graph_cmd import graph
 app.command()(graph)
 
+# Optional Graphify code graph import
+from cli.commands.graphify_cmd import app as graphify_app
+app.add_typer(graphify_app, name="graphify")
+
 if __name__ == "__main__":
     app()
