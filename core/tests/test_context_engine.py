@@ -31,10 +31,11 @@ def _make_memory(
     repo: str = "test-repo",
     importance: float = 0.5,
     hours_ago: float = 0,
+    type: str = "agent_solution",
 ) -> Memory:
     return Memory(
         id=id,
-        type="agent_solution",
+        type=type,
         summary=summary,
         raw_text=summary,
         source="test",
@@ -149,3 +150,51 @@ def test_format_modes_produce_valid_output(store, engine):
     markdown = engine.build("Kubernetes", format="markdown")
     assert "### Relevant Past Solutions" in markdown["context_text"]
     assert "Kubernetes" in markdown["context_text"]
+
+
+def test_architecture_intent_boosts_graphify_code_graph_memories(store, engine, monkeypatch):
+    """
+    Architecture/codebase-map context should prefer Graphify report/node memories
+    over ordinary memories so agents see code graph context without reading raw files first.
+    """
+    ordinary = _make_memory(
+        "ordinary-architecture",
+        "Architecture decision: generic auth retries",
+        importance=1.0,
+        type="agent_solution",
+    )
+    graph_node = _make_memory(
+        "graph-node-auth",
+        "Graphify node: AuthService (class)",
+        importance=0.2,
+        type="graphify_node",
+    )
+    graph_report = _make_memory(
+        "graph-report-auth",
+        "Graphify report: Authentication architecture",
+        importance=0.2,
+        type="graphify_report",
+    )
+    candidates = [ordinary, graph_node, graph_report]
+
+    def fake_text_search(query, k=5, type_filter=None, repo_filter=None, speaker_filter=None):
+        return [
+            {
+                "id": mem.id,
+                "type": mem.type,
+                "summary": mem.summary,
+                "raw_text": mem.raw_text,
+                "repo": mem.repo,
+                "importance": mem.importance,
+                "timestamp": mem.timestamp,
+                "_distance": 0.5,
+            }
+            for mem in candidates
+        ]
+
+    monkeypatch.setattr(store, "text_search", fake_text_search)
+
+    result = engine.build("how does authentication architecture work", intent="architecture")
+
+    ids = [memory["id"] for memory in result["memories"]]
+    assert ids[:2] == ["graph-node-auth", "graph-report-auth"]

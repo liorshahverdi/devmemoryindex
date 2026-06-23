@@ -64,7 +64,7 @@ This file is a historical master roadmap and contains implementation notes from 
 | `core/context_cache.py` | **Done** | Phase 5.B. Module-level LRU cache (50 entries, 5-min TTL) for `ContextEngine.build()`. Keyed on `sha256(query\|repo\|format\|intent)`. Auto-invalidated via `store.add()`. Context response includes `cached: true/false`. |
 | `daemon/jobs/dedup.py` | **Done** | Phase 5.C. Groups memories by `summary[:100].lower()`, keeps highest-importance duplicate, deletes the rest. Runs weekly (Mondays) in daemon scheduler. |
 | `core/memory_store.py` — get_by_id | **Done** | `get_by_id(memory_id)` — fetch a single memory by exact ID. Used to resolve `related[]` links from search results. |
-| `mcp_server/server.py` | **Done** | FastMCP stdio entrypoint for Hermes Agent, Claude Code, and generic MCP clients. **19 tools.** Instructions guide agents on when to search, build context, write memories, diagnose scores, and maintain memory quality. |
+| `mcp_server/server.py` | **Done** | FastMCP stdio entrypoint for Hermes Agent, Claude Code, and generic MCP clients. **21 tools.** Instructions guide agents on when to search, build context, write memories, diagnose scores, maintain memory quality, and use Graphify-derived code graph context. |
 | `mcp_server/tools.py` | **Done** | `search_memories` (DB-level type/repo filters, returns `id`, `related[]`, `times_retrieved`, `times_accessed`), `build_context`, `remember_memory`, `get_memory`, `get_session_context`, `remember_failure`, `update_memory`, `reinforce_memory`, `get_codebase_map`, `plan_task`. |
 | `mcp_server/tools.py` — engagement fields | **Done** | `search_memories` now returns `times_retrieved` and `times_accessed` per result. Agents can trust solutions with high `times_accessed` relative to `times_retrieved` as proven patterns. |
 | `mcp_server/tools.py` — `update_memory` | **Done** | Corrects or improves a stored memory in-place. Re-embeds when text changes (delete+re-add, preserving counters). Prevents knowledge rot from wrong solutions at high importance. |
@@ -151,7 +151,10 @@ This file is a historical master roadmap and contains implementation notes from 
 | `mcp_server/tools.py` — `link_memories` | **Done** | T2-A. Creates typed edge: `caused_by / fixed_by / references / supersedes / contradicts / related_to`. |
 | `mcp_server/tools.py` — `get_memory_graph` | **Done** | T2-A. Returns subgraph up to N hops from a root memory: `{root, nodes, edges, node_count, edge_count}`. |
 | `mcp_server/tools.py` — `trace_causality` | **Done** | T2-A. Follows `caused_by`/`fixed_by` edges to root cause. Returns ordered `{chain, length, root_cause_id}`. |
-| `mcp_server/server.py` — **19 tools** | **Done** | Up from 10. All new Tier-1 and T2-A tools registered. Instructions updated with lifecycle + graph guidance. |
+| `mcp_server/tools.py` — `search_code_graph` | **Done** | Graphify Phase 3. Searches imported `graphify_node` and `graphify_report` memories with repo filtering for agent-facing code graph context. |
+| `mcp_server/tools.py` — `get_code_entity_context` | **Done** | Graphify Phase 3. Resolves a Graphify node by ID/query, traverses imported `EdgeStore` links, and hydrates neighboring code graph memories. |
+| `core/context_engine.py` — Graphify architecture boost | **Done** | Graphify Phase 3. Architecture intent routing boosts `graphify_node` and `graphify_report` ahead of generic memories. |
+| `mcp_server/server.py` — **21 tools** | **Done** | Up from 10. All new Tier-1, T2-A, and Graphify Phase 3 tools registered. Instructions updated with lifecycle, graph, and code graph guidance. |
 | `cli/commands/health.py` | **Done** | T1-E. `devmemory health [--json]` — Rich table: type breakdown, importance histogram, stale/low-CTR counts. |
 | `cli/commands/audit.py` | **Done** | T1-D. `devmemory audit [--purge] [--json]` — shows all deprecated memories with reasons. `--purge` permanently deletes them. |
 | `cli/commands/consolidate.py` | **Done** | T1-C. `devmemory consolidate <id1> <id2> ... [--summary "..."]` — merges memories from CLI. |

@@ -14,6 +14,7 @@ This guide is for autonomous coding agents using the DevMemoryIndex MCP server. 
 8. **Reinforce proven memories.** Call `reinforce_memory` when a retrieved memory directly helped solve the task.
 9. **Correct stale knowledge.** Use `update_memory` when a memory is incomplete or outdated. Use `forget_memory` when it is wrong, superseded, or unsafe to keep active.
 10. **Use graph tools when relationships matter.** Use `link_memories`, `get_memory_graph`, and `trace_causality` after inspecting relevant IDs, especially for bug/fix/root-cause chains.
+11. **Use Graphify tools for code graph context.** In repos with Graphify imports, use `search_code_graph` for architecture/entity questions and `get_code_entity_context` to hydrate a Graphify node plus its imported EdgeStore neighbors.
 
 ## Anti-patterns
 
@@ -41,6 +42,16 @@ Prefer storing root causes and durable facts that make future work faster:
 - `mcp server startup slow sentence transformers import`
 - `hermes mcp add devmemory wrapper script tool discovery`
 - `systemd user service daemon install dry run`
+- `search_code_graph auth service graphify node repo devmemoryindex`
+
+## Graphify code graph context
+
+If `devmemory graphify ingest --with-edges` has been run for a repo, two MCP tools expose that code graph directly:
+
+- `search_code_graph(query, repo=None, k=5)` searches imported `graphify_node` and `graphify_report` memories.
+- `get_code_entity_context(node_or_query, repo=None, depth=1)` resolves a Graphify node by ID/query, traverses imported `EdgeStore` links, and returns hydrated neighboring node memories.
+
+For broader context packing, `build_context(..., intent="architecture")` boosts `graphify_node` and `graphify_report` memories so architecture answers can start from Graphify-derived code graph context before reading raw files.
 
 ## Good memory write shapes
 

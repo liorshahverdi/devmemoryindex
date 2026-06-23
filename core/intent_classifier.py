@@ -40,7 +40,7 @@ INTENT_RULES: dict[str, dict] = {
             "why did", "decision", "approach", "schema", "model",
             "removed", "deleted", "changed",
         ],
-        "type_boost": ["agent_solution", "git_commit", "git_diff"],
+        "type_boost": ["graphify_node", "graphify_report", "agent_solution", "git_commit", "git_diff"],
         "importance_weight": 0.20,
         "recency_weight": 0.05,  # older architectural decisions still relevant
     },

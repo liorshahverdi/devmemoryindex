@@ -2,13 +2,14 @@
 DevMemoryIndex MCP Server
 
 Exposes DevMemoryIndex tools to Claude Code, Hermes Agent, and any MCP-compatible
-agent via stdio transport. The server currently registers 19 tools for:
+agent via stdio transport. The server currently registers 21 tools for:
   - memory search and AI-ready context building
   - session bootstrap from task + git state
   - memory creation, update, forgetting, reinforcement, and consolidation
   - score explainability and context exclusion diagnostics
   - store-health inspection and batch search
   - codebase maps plus typed memory graph / causality traversal
+  - Graphify-derived code graph search and entity-context expansion
 
 Transport: stdio (spawned on demand by the MCP client; no persistent MCP server
 process is required).
@@ -23,7 +24,7 @@ Generic MCP clients can use the same stdio command or wrapper script.
 
 Config file: .mcp.json (project root) — useful for clients that auto-discover project MCP servers.
 Verify in Hermes: run `hermes mcp test devmemory` — all registered tools should be discovered.
-Verify in Claude Code: run /mcp — devmemory should appear as connected with 19 tools.
+Verify in Claude Code: run /mcp — devmemory should appear as connected with 21 tools.
 
 Note: directory is named mcp_server/ (not mcp/) to avoid shadowing the mcp PyPI package.
 """
@@ -55,6 +56,8 @@ from mcp_server.tools import (
     link_memories,
     get_memory_graph,
     trace_causality,
+    search_code_graph,
+    get_code_entity_context,
 )
 
 mcp = FastMCP(
@@ -100,6 +103,12 @@ mcp = FastMCP(
     Use get_memory_graph(memory_id, depth=2) to see all related memories up to N hops.
     Use trace_causality(memory_id) to follow the causal chain to a root cause.
 
+    Graphify code graph context:
+    Use search_code_graph(query, repo) for architecture/entity questions over imported
+    graphify_node and graphify_report memories. Use get_code_entity_context(node_or_query,
+    repo, depth) to resolve a Graphify node and hydrate its EdgeStore neighbors.
+    Run `devmemory graphify ingest --with-edges` first for edge traversal.
+
     Batch search:
     Use search_batch(queries=[...]) to run multiple searches at once and get deduplicated results.
 
@@ -134,6 +143,8 @@ mcp.tool()(search_batch)
 mcp.tool()(link_memories)
 mcp.tool()(get_memory_graph)
 mcp.tool()(trace_causality)
+mcp.tool()(search_code_graph)
+mcp.tool()(get_code_entity_context)
 
 def main() -> None:
     """Run the DevMemoryIndex MCP server over stdio."""

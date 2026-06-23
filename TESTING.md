@@ -296,7 +296,7 @@ hermes mcp test devmemory
 claude mcp list
 ```
 
-**Expect:** `devmemory` listed/connected and 19 tools discovered.
+**Expect:** `devmemory` listed/connected and 21 tools discovered.
 
 Test each tool from an MCP-capable agent session. The examples below use tool-call pseudocode and are not tied to a single client:
 
@@ -316,7 +316,24 @@ search_memories(query="context engine build", k=3)
 ```
 build_context(query="how does query planning work", format="claude", max_tokens=2000)
 ```
-**Expect:** Formatted `<context>` block, within token budget.
+**Expect:** Formatted `<context>` block, within token budget. For architecture/codebase-map queries, Graphify-derived `graphify_node` and `graphify_report` memories are boosted when present.
+
+### 12c-graphify. Graphify code graph MCP tools
+
+After importing a Graphify output directory:
+
+```bash
+devmemory graphify ingest /path/to/repo --with-edges
+```
+
+Use MCP tools:
+
+```
+search_code_graph(query="authentication architecture", repo="my-repo", k=5)
+get_code_entity_context(node_or_query="AuthService", repo="my-repo", depth=1)
+```
+
+**Expect:** `search_code_graph` returns only `graphify_node` / `graphify_report` memories. `get_code_entity_context` returns `status="ok"`, a hydrated `root`, hydrated neighboring `nodes`, and imported `EdgeStore` `edges` with `source="graphify"` when edges were ingested.
 
 ### 12d. `remember_memory`
 ```

@@ -25,6 +25,8 @@ Tool summary:
   link_memories        — create a typed edge between two memories (T2-A)
   get_memory_graph     — return the subgraph of memories connected to a given memory (T2-A)
   trace_causality      — follow causal chain from a memory to its root cause (T2-A)
+  search_code_graph    — search Graphify-derived code graph memories (Phase 3)
+  get_code_entity_context — hydrate a Graphify node plus its EdgeStore neighbors (Phase 3)
 """
 
 import hashlib
@@ -125,7 +127,7 @@ def build_context(
                       "raw"      — plain text, one summary per line
         intent:     Optional intent override to control result weighting. Options:
                       "debug"          — boost agent_solution + terminal_command
-                      "architecture"   — boost agent_solution + git_commit, lower recency weight
+                      "architecture"   — boost graphify_node/report + agent_solution + git_commit, lower recency weight
                       "implementation" — boost git_commit + terminal_command
                       "recall"         — boost voice_note, raise recency weight
                     Auto-classified from query if not provided.
@@ -893,6 +895,152 @@ def trace_causality(memory_id: str) -> dict:
         "chain": chain,
         "length": len(chain),
         "root_cause_id": chain[-1]["memory_id"] if chain else memory_id,
+    }
+
+
+# ── Graphify Phase 3: Agent-Facing Code Graph Context ───────────────────────
+
+def _public_memory(record: dict | None, include_raw: bool = False) -> dict | None:
+    if record is None:
+        return None
+    result = {
+        "id": record.get("id"),
+        "summary": record.get("summary", ""),
+        "type": record.get("type", ""),
+        "repo": record.get("repo"),
+        "importance": record.get("importance"),
+        "tags": record.get("tags", []),
+    }
+    if include_raw:
+        result["raw_text"] = record.get("raw_text", "")
+    return result
+
+
+def search_code_graph(query: str, repo: str | None = None, k: int = 5) -> dict:
+    """Search Graphify-derived code graph memories for architecture/entity context.
+
+    Use this for codebase architecture questions, symbol/entity lookups, subsystem
+    mapping, or when an agent needs Graphify context without reading raw files first.
+    Searches both `graphify_node` memories from graph.json nodes and
+    `graphify_report` memories from GRAPH_REPORT.md, deduplicates by memory ID,
+    and preserves repo filtering.
+
+    Args:
+        query: Natural-language code graph or architecture query.
+        repo:  Optional repo filter.
+        k:     Max combined results to return. Nodes are searched first, then
+               reports are added as fallback/supplemental context.
+
+    Returns:
+        dict with query, repo, result_count, and results[] entries containing
+        id, summary, type, repo, importance, tags, engagement counters, and
+        score_breakdown when available.
+    """
+    store = get_store()
+    vector = embed(query)
+    merged: dict[str, dict] = {}
+    for memory_type in ("graphify_node", "graphify_report"):
+        rows = store.hybrid_search(
+            query,
+            vector,
+            k=k,
+            type_filter=memory_type,
+            repo_filter=repo,
+        )
+        for row in rows:
+            mem_id = row.get("id")
+            if mem_id and mem_id not in merged:
+                merged[mem_id] = {
+                    "id": mem_id,
+                    "summary": row.get("summary", ""),
+                    "type": row.get("type", ""),
+                    "repo": row.get("repo"),
+                    "importance": row.get("importance"),
+                    "tags": row.get("tags", []),
+                    "times_retrieved": row.get("times_retrieved", 0) or 0,
+                    "times_accessed": row.get("times_accessed", 0) or 0,
+                    "score_breakdown": row.get("score_breakdown"),
+                }
+
+    results = list(merged.values())[:k]
+    return {
+        "query": query,
+        "repo": repo,
+        "result_count": len(results),
+        "results": results,
+    }
+
+
+def get_code_entity_context(node_or_query: str, repo: str | None = None, depth: int = 1) -> dict:
+    """Resolve a Graphify code entity and expand its typed memory graph context.
+
+    Use this after `search_code_graph` finds a promising entity, or directly with
+    a symbol/name such as "AuthService". If `node_or_query` is an exact memory ID
+    for a `graphify_node`, it is used directly; otherwise the tool searches
+    Graphify nodes and uses the best match. It then traverses `EdgeStore` links
+    created by `devmemory graphify ingest --with-edges` and hydrates reachable
+    node IDs into memory summaries/raw text.
+
+    Args:
+        node_or_query: Graphify node memory ID, ID prefix, or natural-language entity query.
+        repo:          Optional repo filter used when resolving by query.
+        depth:         Edge traversal depth, clamped to 1–5. Default 1.
+
+    Returns:
+        dict with root memory, hydrated nodes, graph edges, node_count, and edge_count.
+        If no Graphify node is found, returns {"status": "not_found", ...}.
+    """
+    store = get_store()
+    root = store.get_by_id(node_or_query, reinforce=False)
+    if not root or root.get("type") != "graphify_node" or (repo and root.get("repo") != repo):
+        vector = embed(node_or_query)
+        matches = store.hybrid_search(
+            node_or_query,
+            vector,
+            k=1,
+            type_filter="graphify_node",
+            repo_filter=repo,
+        )
+        if not matches:
+            return {
+                "status": "not_found",
+                "query": node_or_query,
+                "repo": repo,
+                "message": "No Graphify node memory matched the query. Run `devmemory graphify ingest --with-edges` first or try search_code_graph().",
+            }
+        root = matches[0]
+
+    from core.edge_provider import get_edges
+
+    depth = max(1, min(int(depth), 5))
+    graph = get_edges().get_graph(root["id"], depth=depth)
+    hydrated_nodes = []
+    for node_id in graph.get("nodes", []):
+        record = store.get_by_id(node_id, reinforce=False)
+        public = _public_memory(record, include_raw=True)
+        if public is None:
+            public = {
+                "id": node_id,
+                "summary": "",
+                "type": "missing",
+                "repo": None,
+                "importance": None,
+                "tags": [],
+                "raw_text": "",
+            }
+        hydrated_nodes.append(public)
+
+    hydrated_nodes.sort(key=lambda node: (node["id"] != root["id"], node["id"]))
+    return {
+        "status": "ok",
+        "query": node_or_query,
+        "repo": repo,
+        "depth": depth,
+        "root": _public_memory(root, include_raw=True),
+        "nodes": hydrated_nodes,
+        "edges": graph.get("edges", []),
+        "node_count": len(hydrated_nodes),
+        "edge_count": len(graph.get("edges", [])),
     }
 
 

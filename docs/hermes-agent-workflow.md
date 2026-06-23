@@ -34,12 +34,27 @@ Use this order for complex implementation, debugging, refactoring, packaging, or
 3. If context is thin or misses a subsystem, call `search_memories` with specific technical terms.
 4. For useful search hits, call `get_memory` on the result `id` and promising `related[]` IDs.
 5. For broad multi-file work, call `build_context` to pack relevant memories into an AI-ready context block.
-6. Use `plan_task` only when a grounded implementation plan is worth the extra LLM call.
-7. Work normally with tests and verification.
-8. After verified success, call `remember_memory` only for durable lessons, root causes, reusable commands, conventions, or architecture decisions.
-9. If a dead end consumed meaningful time, call `remember_failure` with the exact attempted command/approach and why it failed.
-10. If a retrieved memory directly helped, call `reinforce_memory`.
-11. If a memory is wrong or stale, call `update_memory` or `forget_memory`.
+6. For codebase architecture/entity questions in repos with Graphify imports, call `search_code_graph`; then use `get_code_entity_context` to hydrate a selected Graphify node and its EdgeStore neighbors.
+7. Use `plan_task` only when a grounded implementation plan is worth the extra LLM call.
+8. Work normally with tests and verification.
+9. After verified success, call `remember_memory` only for durable lessons, root causes, reusable commands, conventions, or architecture decisions.
+10. If a dead end consumed meaningful time, call `remember_failure` with the exact attempted command/approach and why it failed.
+11. If a retrieved memory directly helped, call `reinforce_memory`.
+12. If a memory is wrong or stale, call `update_memory` or `forget_memory`.
+
+## Graphify code graph workflow
+
+When Graphify output has been imported with:
+
+```bash
+devmemory graphify ingest /path/to/repo --with-edges
+```
+
+Hermes can use DevMemoryIndex as a code graph context layer:
+
+1. Use `search_code_graph("auth architecture", repo="my-repo")` for architecture, subsystem, symbol, or entity questions.
+2. Use `get_code_entity_context("AuthService", repo="my-repo", depth=1)` to resolve a Graphify node and hydrate neighboring code graph memories through imported EdgeStore links.
+3. Use `build_context(..., intent="architecture")` for broader context packing; architecture routing boosts `graphify_node` and `graphify_report` memories ahead of generic memories.
 
 ## Recommended Hermes prompt
 

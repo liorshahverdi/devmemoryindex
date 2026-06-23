@@ -372,6 +372,6 @@ The following setup was verified on a Linux Hermes host:
 - Git post-commit hooks installed in each repository.
 - User-level systemd daemon running and watching configured repositories.
 - Hermes MCP server `devmemory` registered through a wrapper script.
-- `hermes mcp test devmemory` discovered 19 tools successfully.
+- `hermes mcp test devmemory` discovered 21 tools successfully, including Graphify code graph tools (`search_code_graph`, `get_code_entity_context`) on current builds.
 
 These observations should be used as regression scenarios when implementing the improvements above.

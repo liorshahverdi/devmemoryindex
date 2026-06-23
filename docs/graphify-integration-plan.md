@@ -273,16 +273,25 @@ Acceptance criteria:
 
 ## Phase 3 — Agent-Facing Context
 
+Status: ✅ Implemented
+
 Deliverables:
 
-- MCP tool `search_code_graph`
-- MCP tool `get_code_entity_context`
-- `ContextEngine` boost for `graphify_report` and `graphify_node` on architecture/codebase-map intents
+- MCP tool `search_code_graph` ✅
+- MCP tool `get_code_entity_context` ✅
+- `ContextEngine` boost for `graphify_report` and `graphify_node` on architecture/codebase-map intents ✅
 
 Acceptance criteria:
 
-- Agents can ask codebase architecture questions without reading raw files first.
-- `build_context(..., intent="architecture")` includes Graphify-derived memories when relevant.
+- Agents can ask codebase architecture questions without reading raw files first. ✅
+- `build_context(..., intent="architecture")` includes Graphify-derived memories when relevant. ✅
+
+Implemented behavior:
+
+- `search_code_graph(query, repo=None, k=5)` searches both `graphify_node` and `graphify_report` memories, deduplicates by memory ID, preserves repo filtering, and returns engagement counters plus score breakdowns when available.
+- `get_code_entity_context(node_or_query, repo=None, depth=1)` accepts a Graphify node memory ID/prefix or natural-language symbol query, resolves the best `graphify_node`, traverses imported `EdgeStore` links up to depth 5, and hydrates reachable node IDs into memory summaries/raw text.
+- Architecture intent routing now boosts `graphify_node` and `graphify_report` ahead of generic memories so Graphify-derived code graph context appears in `build_context` for architecture/codebase-map questions.
+- MCP server registration exposes 21 tools total, including the two Graphify Phase 3 tools.
 
 ## Phase 4 — Optional Build Automation
 

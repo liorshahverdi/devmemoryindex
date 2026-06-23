@@ -40,7 +40,22 @@ Restart Hermes or run `/reload-mcp` after applying the change. Then verify:
 hermes mcp test devmemory
 ```
 
-Expected result: Hermes connects to the stdio server and discovers the DevMemoryIndex MCP tools.
+Expected result: Hermes connects to the stdio server and discovers the DevMemoryIndex MCP tools. The current server exposes 21 tools, including Graphify code graph tools when the installed checkout includes the Graphify integration.
+
+## Graphify-aware MCP tools
+
+After importing Graphify output with edges:
+
+```bash
+devmemory graphify ingest /path/to/repo --with-edges
+```
+
+MCP clients can use:
+
+- `search_code_graph(query, repo=None, k=5)` to search `graphify_node` and `graphify_report` memories for codebase architecture or entity questions.
+- `get_code_entity_context(node_or_query, repo=None, depth=1)` to resolve a Graphify node by ID/query, traverse imported EdgeStore relationships, and hydrate neighboring code-graph memories.
+
+Architecture-oriented `build_context` calls also boost `graphify_node` and `graphify_report` memories, so agents can get code graph context without manually reading source files first.
 
 ## Why use a wrapper?
 

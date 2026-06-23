@@ -30,6 +30,13 @@ def _classify_intent(query: str):
     return classify_intent(query)
 
 
+def _routing_for_intent(intent: str | None) -> dict:
+    if not intent:
+        return {}
+    from core.intent_classifier import INTENT_RULES
+    return INTENT_RULES.get(intent, {})
+
+
 class ContextEngine:
 
     def __init__(self, store):
@@ -78,7 +85,7 @@ class ContextEngine:
 
         # 3. Classify intent and re-rank with adjusted weights + type boosting
         detected_intent, routing = (
-            (intent, {}) if intent else _classify_intent(query)
+            (intent, _routing_for_intent(intent)) if intent else _classify_intent(query)
         )
         if routing:
             if routing.get("sort_by_time"):
@@ -158,7 +165,10 @@ class ContextEngine:
             importance = m.get("importance", 0.5)
             recency = self._recency(m.get("timestamp"))
             score = semantic * sem_w + importance * imp_w + recency * rec_w
-            boosted = 1 if m.get("type") in type_boost else 0
+            if m.get("type") in type_boost:
+                boosted = len(type_boost) - type_boost.index(m.get("type"))
+            else:
+                boosted = 0
             return (boosted, score)
 
         return sorted(memories, key=intent_score, reverse=True)

@@ -231,7 +231,7 @@ devmemory ingest --source meeting
 
 ### `graphify ingest` — Import optional Graphify code graph output
 
-Graphify integration is explicit and read-only in Phase 1. DevMemoryIndex does not run Graphify automatically; it imports an existing `graphify-out/` directory into searchable memories.
+Graphify integration is explicit and optional. DevMemoryIndex does not run Graphify automatically yet; it imports an existing `graphify-out/` directory into searchable memories and can preserve Graphify edges in the unified `EdgeStore` memory graph.
 
 ```bash
 # Imports PATH/graphify-out/GRAPH_REPORT.md and PATH/graphify-out/graph.json
@@ -239,6 +239,7 @@ devmemory graphify ingest PATH
 
 # Useful controls for large graphs or scripting
 devmemory graphify ingest PATH --repo my-app --min-degree 1
+devmemory graphify ingest PATH --with-edges
 devmemory graphify ingest PATH --dry-run
 devmemory graphify ingest PATH --no-report
 devmemory graphify ingest PATH --no-nodes
@@ -248,6 +249,21 @@ Imported memory types:
 
 - `graphify_report` — one memory per `GRAPH_REPORT.md` section
 - `graphify_node` — one memory per selected `graph.json` node
+
+When `--with-edges` is set, `graph.json` relationships are imported into `EdgeStore` as non-causal memory graph edges. `calls`, `imports`, `contains`, `implements`, and `inherits` map to `references`; semantic/similar/unknown relations map to `related_to`; `supersedes` maps to `supersedes`. Edge ingestion is idempotent and only links nodes that were imported after `--min-degree` filtering.
+
+After edge ingestion, regular graph tools work with Graphify nodes:
+
+```bash
+devmemory graph <graphify_node_memory_id> --depth 2
+```
+
+MCP agents also get Graphify-specific tools:
+
+- `search_code_graph(query, repo, k)` — searches `graphify_node` and `graphify_report` memories for architecture/entity context.
+- `get_code_entity_context(node_or_query, repo, depth)` — resolves a Graphify node memory and hydrates its imported EdgeStore neighbors.
+
+`build_context(..., intent="architecture")` and architecture-like queries boost `graphify_node` and `graphify_report` memories so agents can answer codebase architecture questions without reading raw files first.
 
 ---
 
@@ -458,9 +474,9 @@ Claude Code is also supported as an MCP client. Add to `~/.claude/settings.json`
 
 ### Available tools
 
-The MCP server currently registers 19 tools. Agent-facing descriptions should remain concise and operational because they are loaded into MCP clients as tool schemas.
+The MCP server currently registers 21 tools. Agent-facing descriptions should remain concise and operational because they are loaded into MCP clients as tool schemas.
 
-**19 MCP tools available:**
+**21 MCP tools available:**
 
 | Tool | Purpose |
 |---|---|
@@ -483,6 +499,8 @@ The MCP server currently registers 19 tools. Agent-facing descriptions should re
 | `link_memories` | Create a typed causal edge between two memories. |
 | `get_memory_graph` | Subgraph up to N hops from a root memory. |
 | `trace_causality` | Follow `caused_by`/`fixed_by` edges to root cause. |
+| `search_code_graph` | Search Graphify-derived `graphify_node` and `graphify_report` memories for architecture/entity context. |
+| `get_code_entity_context` | Resolve a Graphify node by ID/query and hydrate its EdgeStore neighbors. |
 
 ---
 
