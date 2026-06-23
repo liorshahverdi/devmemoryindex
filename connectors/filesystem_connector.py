@@ -6,6 +6,12 @@ covers a coherent block of code. IDs are content-addressed (filepath + line
 range + first 200 chars of content) so unchanged chunks are silently skipped
 on re-index while changed chunks are picked up as new memories.
 
+Performance/resilience features:
+  * per-file fingerprints are persisted after each successfully inspected file
+    so repeated and interrupted scans skip unchanged files before embedding;
+  * optional repo and max-files limits make large scans tunable;
+  * `last_stats` and progress callbacks expose skipped reasons for agents.
+
 Memory fields:
   type        "file_content"
   summary     "rel/path/to/file.py (lines N–M)"
@@ -20,7 +26,12 @@ Configuration:
   devmemory config remove-code ~/projects/myapp
 """
 
+from __future__ import annotations
+
 import hashlib
+import json
+from collections import Counter
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -56,45 +67,140 @@ CHUNK_LINES = 80
 OVERLAP_LINES = 10
 MIN_CHUNK_LINES = 10
 MAX_CHUNK_CHARS = 3000
+DEFAULT_STATE_PATH = Path.home() / ".config" / "devmemory" / "filesystem_state.json"
+
+ProgressCallback = Callable[[dict], None]
+
+
+class FilesystemIndexState:
+    """Small JSON sidecar for fast unchanged-file skips."""
+
+    def __init__(self, path: str | Path = DEFAULT_STATE_PATH):
+        self.path = Path(path).expanduser()
+        self.data = self._load()
+
+    def _load(self) -> dict:
+        try:
+            data = json.loads(self.path.read_text())
+            if isinstance(data, dict) and isinstance(data.get("files"), dict):
+                return data
+        except Exception:
+            pass
+        return {"version": 1, "files": {}}
+
+    def get(self, path: Path) -> str | None:
+        return self.data["files"].get(str(path.resolve()))
+
+    def set(self, path: Path, fingerprint: str) -> None:
+        self.data["files"][str(path.resolve())] = fingerprint
+        self.save()
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True))
+        tmp.replace(self.path)
 
 
 class FilesystemConnector(Connector):
     name = "filesystem"
 
-    def __init__(self, dirs: list[str] | None = None):
+    def __init__(
+        self,
+        dirs: list[str] | None = None,
+        *,
+        state_path: str | Path = DEFAULT_STATE_PATH,
+        max_files: int | None = None,
+        repo: str | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ):
         super().__init__()
         self.dirs = dirs or cfg.get_filesystem_dirs()
+        self.state = FilesystemIndexState(state_path)
+        self.max_files = max_files
+        self.repo = repo
+        self.progress_callback = progress_callback
+        self.last_stats = self._new_stats()
+
+    @staticmethod
+    def _new_stats() -> dict:
+        return {
+            "roots_scanned": [],
+            "inspected": 0,
+            "indexed": 0,
+            "chunks_added": 0,
+            "skipped": Counter(),
+            "errors": 0,
+        }
+
+    def _progress(self, event: str, **payload) -> None:
+        if not self.progress_callback:
+            return
+        data = {"event": event, **payload}
+        self.progress_callback(data)
 
     def collect(self) -> int:
+        self.last_stats = self._new_stats()
         if not self.dirs:
+            self._progress("summary", **self._serializable_stats())
             return 0
         count = 0
         for d in self.dirs:
             root = Path(d).expanduser().resolve()
             if not root.is_dir():
+                self.last_stats["skipped"]["missing_root"] += 1
+                continue
+            if self.repo and root.name != self.repo and _infer_repo(root) != self.repo:
+                self.last_stats["skipped"]["repo_filter"] += 1
                 continue
             count += self._index_dir(root)
+            if self.max_files is not None and self.last_stats["inspected"] >= self.max_files:
+                break
+        self._progress("summary", **self._serializable_stats())
         return count
 
-    def _index_dir(self, root: Path) -> int:
-        count = 0
+    def _serializable_stats(self) -> dict:
+        return {**self.last_stats, "skipped": dict(self.last_stats["skipped"])}
+
+    def _candidate_paths(self, root: Path):
         for path in sorted(root.rglob("*")):
             if not path.is_file():
                 continue
-            # Skip files inside ignored directories
-            if any(part in SKIP_DIRS for part in path.parts):
+            yield path
+
+    def _index_dir(self, root: Path) -> int:
+        self.last_stats["roots_scanned"].append(str(root))
+        self._progress("root", root=str(root))
+        count = 0
+        for path in self._candidate_paths(root):
+            if self.max_files is not None and self.last_stats["inspected"] >= self.max_files:
+                self.last_stats["skipped"]["max_files"] += 1
                 continue
-            if path.name in SKIP_FILES:
+
+            reason = _skip_reason(path)
+            if reason:
+                self.last_stats["skipped"][reason] += 1
                 continue
-            ext = path.suffix.lower()
-            if ext not in CODE_EXTENSIONS and ext not in CONFIG_EXTENSIONS:
+
+            self.last_stats["inspected"] += 1
+            fingerprint = _fingerprint(path)
+            if self.state.get(path) == fingerprint:
+                self.last_stats["skipped"]["unchanged"] += 1
+                self._progress("file", path=str(path), inspected=self.last_stats["inspected"], added=0, skipped="unchanged")
                 continue
-            if path.stat().st_size > MAX_FILE_BYTES:
-                continue
+
             try:
-                count += self._index_file(path, root)
+                added = self._index_file(path, root)
+                count += added
+                self.last_stats["indexed"] += 1
+                self.last_stats["chunks_added"] += added
+                self.state.set(path, fingerprint)
+                self._progress("file", path=str(path), inspected=self.last_stats["inspected"], added=added)
             except Exception:
-                pass
+                self.last_stats["errors"] += 1
+                # Keep the existing best-effort behavior for scheduled daemons:
+                # one bad file must not abort the entire ingest.
+                self._progress("file", path=str(path), inspected=self.last_stats["inspected"], added=0, error=True)
         return count
 
     def _index_file(self, path: Path, root: Path) -> int:
@@ -105,6 +211,7 @@ class FilesystemConnector(Connector):
 
         lines = text.splitlines()
         if len(lines) < MIN_CHUNK_LINES:
+            self.last_stats["skipped"]["too_short"] += 1
             return 0
 
         repo = _infer_repo(path) or root.name
@@ -161,6 +268,27 @@ class FilesystemConnector(Connector):
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
+
+
+def _skip_reason(path: Path) -> str | None:
+    if any(part in SKIP_DIRS for part in path.parts):
+        return "ignored_directory"
+    if path.name in SKIP_FILES:
+        return "ignored_file"
+    ext = path.suffix.lower()
+    if ext not in CODE_EXTENSIONS and ext not in CONFIG_EXTENSIONS:
+        return "unsupported_extension"
+    try:
+        if path.stat().st_size > MAX_FILE_BYTES:
+            return "large_file"
+    except OSError:
+        return "stat_error"
+    return None
+
+
+def _fingerprint(path: Path) -> str:
+    stat = path.stat()
+    return hashlib.sha256(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode()).hexdigest()
 
 
 def _chunk_lines(lines: list[str]) -> list[tuple[int, int, list[str]]]:

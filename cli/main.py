@@ -79,6 +79,10 @@ app.command()(get)
 from cli.commands.hook_cmd import app as hook_app
 app.add_typer(hook_app, name="hook")
 
+# MCP client registration helpers
+from cli.commands.mcp_cmd import app as mcp_app
+app.add_typer(mcp_app, name="mcp")
+
 # Phase 7.7 — ML intent classifier training (requires [ml] extra)
 try:
     from cli.commands.train_cmd import train_intent

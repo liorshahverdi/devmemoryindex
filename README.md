@@ -406,7 +406,20 @@ use an explicit Python command or a small wrapper that runs
 `python -m mcp_server.server` from the repository root.
 
 After adding the MCP server, start a new Hermes session or restart the gateway
-so the discovered tools are available to the agent.
+so the discovered tools are available to the agent. For non-interactive setup,
+use the DevMemoryIndex helper:
+
+```bash
+devmemory mcp install-hermes --yes
+hermes mcp test devmemory
+```
+
+For copy-paste config blocks for Hermes, Claude Code, and generic MCP clients,
+see [MCP client registration](docs/mcp-clients.md). For the recommended Hermes
+agent workflow and memory hygiene rules, see
+[`docs/hermes-agent-workflow.md`](docs/hermes-agent-workflow.md) and the MCP
+server's [`mcp_server/AGENT_GUIDE.md`](mcp_server/AGENT_GUIDE.md).
+
 
 ### Claude Code
 

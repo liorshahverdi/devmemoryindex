@@ -58,58 +58,32 @@ normal DevMemoryIndex daemon logs.
 
 ## 2. Better non-interactive MCP registration
 
-### Problem
+### Implemented behavior
 
-MCP registration often happens during automated setup by an agent. Interactive prompts can block automation.
-
-For Hermes Agent specifically, `hermes mcp add` successfully probes the DevMemoryIndex MCP server and discovers all tools, but then prompts:
-
-```text
-Enable all 19 tools? [Y/n/select]:
-```
-
-In non-interactive shells, this can cancel registration. A setup guide can work around this by writing config directly, but the ideal path should be scriptable.
-
-### Desired behavior
-
-Document and support a fully non-interactive path for MCP clients where possible.
-
-For DevMemoryIndex docs, provide command snippets for:
-
-- Hermes Agent
-- Claude Code
-- generic MCP stdio JSON config
-
-For Hermes specifically, recommend either:
+DevMemoryIndex now includes a scriptable MCP registration helper for Hermes:
 
 ```bash
-hermes mcp add devmemory --command ~/.local/bin/devmemory-mcp-server --yes
+devmemory mcp install-hermes --yes
+hermes mcp test devmemory
 ```
 
-if Hermes adds a `--yes` flag, or a documented config block if not.
+The command writes a stable wrapper script and upserts a `mcp_servers.devmemory`
+entry in the Hermes config without prompting. `--dry-run` prints the plan without
+writing files, which keeps agent/bootstrap setup inspectable and safe.
 
-### Proposed DevMemoryIndex-side work
+Client examples live in `docs/mcp-clients.md` and cover:
 
-- Add a `docs/mcp-clients.md` or expand README with tested examples.
-- Include a stable wrapper script pattern:
+- Hermes Agent non-interactive setup
+- wrapper-script rationale
+- manual Hermes config blocks
+- Claude Code / generic MCP stdio JSON config
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-cd /path/to/devmemoryindex
-exec /path/to/devmemoryindex/.venv/bin/python -m mcp_server.server
-```
+### Verification
 
-- Explain why a wrapper script is useful:
-  - avoids `python -m` argument parsing ambiguity in some CLIs
-  - keeps working directory stable
-  - avoids relying on shell aliases or activated virtualenvs
-
-### Potential upstream/Hermes contribution
-
-- Add `hermes mcp add --yes` or `--enable-all`.
-- Add a `hermes mcp add --no-probe` mode for offline config creation.
-- Add a `hermes mcp export-config <name>` helper.
+- `cli/tests/test_mcp_registration_cli.py` covers config rendering, idempotent
+  replacement of an existing `devmemory` server block, dry-run behavior, and
+  real wrapper/config writes in a temp directory.
+- `README.md` links to the non-interactive helper and client config docs.
 
 ### Acceptance criteria
 
@@ -220,48 +194,27 @@ def get_embedding_model():
 
 ## 5. Filesystem connector performance and resilience
 
-### Problem
+### Implemented behavior
 
-The first `filesystem` ingest can take a long time on multi-repo workspaces. In one setup, a 120-second bounded run timed out but still added 143 `file_content` memories.
+Filesystem ingestion is now observable, resumable, and tunable.
 
-The connector needs clearer progress, resumability, and better controls so users and agents know whether it is working, stuck, or finished.
+- `devmemory ingest --source filesystem --repo <name>` limits scans to a matching configured root/repo.
+- `devmemory ingest --source filesystem --max-files <N>` bounds large scan runs.
+- Per-file fingerprints are persisted to `~/.config/devmemory/filesystem_state.json` after each successfully inspected file, so repeated or interrupted scans skip unchanged files before embedding.
+- `FilesystemConnector.last_stats` tracks inspected files, chunks added, errors, scanned roots, and skipped reasons.
+- CLI output includes filesystem progress and a final summary with skipped reasons such as `unchanged`, `unsupported_extension`, `too_short`, `ignored_directory`, `large_file`, and `max_files`.
 
-### Desired behavior
-
-Filesystem ingestion should be observable, resumable, and tunable.
-
-### Proposed improvements
-
-- Show progress by repository and file count:
-
-```text
-filesystem: scanning /home/user/projects/app
-filesystem: 140/520 files inspected, 38 chunks added, 12 skipped unchanged
-```
-
-- Add limits:
+Example:
 
 ```bash
-devmemory ingest --source filesystem --repo my-app
-devmemory ingest --source filesystem --max-files 500
-devmemory ingest --source filesystem --since HEAD~20
+devmemory ingest --source filesystem --repo my-app --max-files 500
 ```
 
-- Persist per-file fingerprints so re-runs skip unchanged files quickly.
-- Add timeout-safe checkpointing so partial ingests are expected and resumable.
-- Emit a summary with skipped reasons:
-  - unsupported extension
-  - too short
-  - ignored directory
-  - unchanged hash
-  - binary/large file
+### Verification
 
-### Tests
-
-- Fixture repo with supported/unsupported files.
-- Verify unchanged files are skipped on second run.
-- Verify modified chunks are re-indexed without duplicating unchanged chunks.
-- Verify progress/log output includes enough detail for agent monitoring.
+- `connectors/tests/test_filesystem_connector_resilience.py` covers unchanged-file fast skips, max-file limits, progress events, repo filtering, and per-file fingerprint persistence after partial/interrupted scans.
+- Existing filesystem connector tests continue to verify chunking, deduplication, skip directories, stale chunk eviction, and importance scoring.
+- `cli/tests/test_ingest_cli.py` covers the filesystem-specific CLI options and summary output.
 
 ### Acceptance criteria
 
@@ -399,13 +352,13 @@ Before modifying this repo, use DevMemoryIndex to retrieve relevant context for:
 1. Lazy-load embeddings and heavy dependencies. ✅ Implemented
 2. Native Linux daemon install/status/uninstall. ✅ Implemented
 3. Packaging cleanup for MCP dependency. ✅ Implemented
-4. Agent-optimized MCP tool descriptions.
+4. Agent-optimized MCP tool descriptions. ✅ Implemented
+5. Hermes-specific agent start workflow. ✅ Implemented
 
 ### Follow-up work
 
-5. Hermes-specific agent start workflow.
-6. Better non-interactive MCP registration.
-7. Filesystem connector performance and resilience.
+6. Better non-interactive MCP registration. ✅ Implemented
+7. Filesystem connector performance and resilience. ✅ Implemented
 
 This order prioritizes startup reliability, installability, MCP packaging correctness, and agent tool-choice quality first. Those are the highest-leverage improvements for a Hermes + OpenAI/Pi coding-agent workflow because they make DevMemoryIndex dependable as an always-on shared project-memory service before expanding connector scope.
 

@@ -60,20 +60,30 @@ from mcp_server.tools import (
 mcp = FastMCP(
     "devmemory",
     instructions="""
-    DevMemoryIndex: Persistent developer memory store.
+    DevMemoryIndex: Persistent developer memory store for coding agents.
 
-    Use get_session_context FIRST at the start of any coding session — it combines your
-    task description with current git state to surface the most relevant past context.
-    Use search_memories to find relevant past solutions, decisions, and commands.
-    Use build_context to get a formatted context block before starting complex tasks.
-    Use remember_memory after solving a hard problem to persist the solution.
-    Use remember_failure after hitting a dead end — records what failed and why so
-    future sessions don't repeat the same mistake.
-    Use get_memory to resolve related memory IDs returned in search results.
-    Use update_memory to correct a wrong or outdated stored solution.
-    Use reinforce_memory after successfully applying a solution — boosts its importance.
-    Use get_codebase_map to get a structural overview of an unfamiliar or refactored repo.
-    Use plan_task to generate a grounded implementation plan before writing code.
+    Operational guide: mcp_server/AGENT_GUIDE.md documents the recommended
+    autonomous-agent flow and memory hygiene rules.
+
+    Recommended flow for complex repo work:
+    1. Use get_session_context once at task start with task + repo + likely files.
+       Do not call get_session_context repeatedly unless the task changes substantially.
+    2. If context is insufficient, use search_memories with specific technical terms.
+    3. Use get_memory for high-signal result IDs and related[] IDs before acting on them.
+    4. Use build_context before broad implementation planning or multi-file changes.
+    5. Use plan_task only for non-trivial implementation planning; it may call an LLM.
+    6. After verified success, use remember_memory for durable root causes, commands,
+       workflows, integration gotchas, and architecture decisions.
+    7. After meaningful dead ends, use remember_failure with exact attempted commands
+       and why they failed.
+    8. Use reinforce_memory when a retrieved memory directly helped.
+    9. Use update_memory or forget_memory when stored knowledge is wrong, outdated, or superseded.
+
+    Memory hygiene:
+    Avoid storing PR numbers, issue numbers, branch names, temporary TODO state,
+    copied logs without explanation, secrets, tokens, credentials, or one-off progress.
+    Prefer storing root causes, durable environment quirks, verified commands,
+    project conventions, reusable debugging workflows, and architecture decisions.
 
     Score transparency:
     Use explain_score(memory_id, query) to understand WHY a memory ranked where it did.

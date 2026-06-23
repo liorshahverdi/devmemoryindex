@@ -47,6 +47,12 @@ def search_memories(
 ) -> list[dict]:
     """Search developer memory for relevant past solutions, commits, notes, and commands.
 
+    Use before debugging, refactoring, changing unfamiliar code, or answering "how did
+    we handle X before?" questions. Prefer specific technical terms, errors, file names,
+    library names, and repo filters. Do not use broad queries like "bug" or "memory"
+    unless exploring; narrow them after the first result. Use returned IDs with get_memory
+    when a result or related[] ID looks actionable.
+
     Uses hybrid search (semantic vector similarity + keyword matching) over all indexed
     memories. Results are ranked by relevance, importance, and recency.
 
@@ -170,9 +176,11 @@ def remember_memory(
 ) -> dict:
     """Persist a solution or decision to developer memory for future retrieval.
 
-    Call this after solving a non-trivial problem, making an architectural decision,
-    or discovering something worth remembering across sessions. Duplicates are
-    detected by content hash and silently skipped.
+    Use only after a solution is verified, a durable architectural decision is made,
+    or a reusable workflow/root cause is discovered. Do not store transient task progress,
+    PR numbers, issue numbers, branch names, copied logs without explanation, or anything
+    likely to be stale within a week. Do not store secrets, tokens, credentials, or private
+    personal data. Duplicates are detected by content hash and silently skipped.
 
     Args:
         summary:     One-sentence description of the solution or decision (max 200 chars).
@@ -320,6 +328,11 @@ def get_session_context(
     files: list[str] | None = None,
 ) -> str:
     """Call once at session start to surface relevant past context before writing any code.
+
+    Use this as the first DevMemoryIndex call for complex coding/debugging work.
+    Do not call repeatedly during the same task; reuse the returned context unless the
+    task changes substantially. If returned context is insufficient, follow up with
+    search_memories using specific technical terms, then get_memory for promising IDs.
 
     Combines the task description with current git state (modified files, recent commits)
     and optionally the content of files you're about to edit, to pull the most relevant
@@ -551,6 +564,10 @@ def explain_score(memory_id: str, query: str) -> dict:
 def why_not_included(memory_id: str, query: str, max_tokens: int = 4000) -> dict:
     """Explain why a memory was excluded from a build_context result.
 
+    Use this when a specific memory looks relevant but did not appear in the
+    context block, or when tuning query wording/token budgets. Prefer running it
+    with the same query and max_tokens used for build_context so diagnostics match.
+
     Diagnoses whether the memory was:
       - Not in any search results (too dissimilar to the query)
       - In results but dropped by deduplication (near-identical to a higher-ranked memory)
@@ -661,6 +678,10 @@ def forget_memory(memory_id: str, reason: str = "") -> dict:
 def get_store_health() -> dict:
     """Return a quality and health report on the memory store.
 
+    Use this before a cleanup/consolidation pass, when search quality appears noisy,
+    or when diagnosing stale/low-signal memories. Do not treat metrics alone as a
+    deletion mandate; inspect candidate memories before forgetting or consolidating.
+
     Surfaces metrics that help identify stale, redundant, or low-signal memories
     so agents can decide when to consolidate, forget, or prune the store.
 
@@ -705,6 +726,10 @@ def consolidate_memories(ids: list[str], summary: str | None = None) -> dict:
 
 def search_batch(queries: list[str], k: int = 5) -> dict:
     """Run multiple searches in parallel and return a deduplicated, unified result set.
+
+    Use this when a task has several independent technical terms or hypotheses and
+    separate searches would be redundant. Prefer 2-5 focused queries over one broad
+    query. Do not use this for repeated variations of the same vague phrase.
 
     Useful when you want to search for several related topics at once without
     making separate search_memories() calls. Results are merged and deduplicated
@@ -778,6 +803,10 @@ def search_batch(queries: list[str], k: int = 5) -> dict:
 def link_memories(from_id: str, to_id: str, edge_type: str, confidence: float = 1.0) -> dict:
     """Create a typed causal/semantic edge between two memories.
 
+    Use this after you have inspected both memories and know the relationship.
+    Prefer precise edge types like "fixed_by" or "caused_by" over "related_to" when
+    evidence supports them. Do not link memories just because they share keywords.
+
     Edges encode the relationship between memories so you can trace causal chains,
     find what fixed a bug, or see what a solution references.
 
@@ -840,6 +869,10 @@ def get_memory_graph(memory_id: str, depth: int = 2) -> dict:
 def trace_causality(memory_id: str) -> dict:
     """Follow the causal chain from a memory back to its root cause.
 
+    Use this for failure_note, bug, or incident memories that have caused_by/fixed_by
+    links and you need root-cause context before changing code. Do not expect useful
+    output until memories have been linked manually or by edge inference.
+
     Traverses "caused_by" and "fixed_by" edges from the given memory to the
     deepest ancestor in the causal chain. Returns an ordered sequence of
     memory IDs showing how a problem propagated or was resolved.
@@ -870,6 +903,11 @@ def remember_failure(
     repo: str | None = None,
 ) -> dict:
     """Record a failed approach so future sessions don't repeat the same mistake.
+
+    Use after a dead end consumed meaningful time, especially during debugging,
+    installs, migrations, or performance work. Include the failed hypothesis, exact command
+    or code path, observed error/output, and why it failed. Avoid recording
+    trivial typos or first-attempt misses that future agents would not repeat.
 
     Args:
         summary:        One sentence: what was attempted and that it failed.
