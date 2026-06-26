@@ -471,6 +471,138 @@ trace_causality(memory_id="<fix-id>")
 
 ---
 
+## 12.5. Auto-Link Edge Inference (Phase 8.2)
+
+These steps verify the Phase 8.2 graph expansion in `daemon/jobs/edge_inference.py`: test failures link to commits, similar stack traces across repos link to each other, and failures link to solutions by stack/error signature.
+
+### 12.5a. Run the focused regression tests
+```bash
+uv run pytest daemon/tests/test_edge_inference.py -q
+```
+**Expect:** `3 passed`. These tests create an isolated temporary LanceDB store and verify:
+- `failure_note` → `git_commit` `fixed_by` when the same pytest test identifier appears in both memories.
+- Cross-repo `failure_note` → `failure_note` `related_to` when stack/error signatures match.
+- `failure_note` → `agent_solution` `references` when a stack trace signature matches the saved solution.
+
+### 12.5b. Run neighboring graph/daemon tests
+```bash
+uv run pytest \
+  daemon/tests/test_edge_inference.py \
+  daemon/tests/test_scheduler.py \
+  core/tests/test_daemon_jobs.py \
+  cli/tests/test_graph_cli.py \
+  -q
+```
+**Expect:** All tests pass. This confirms the new heuristics still work with weekly daemon scheduling and graph CLI rendering.
+
+### 12.5c. Manually seed a scratch memory DB
+Use a scratch DB so local production memories are not modified:
+
+```bash
+SCRATCH_DB=/tmp/devmemory-edge-test
+rm -rf "$SCRATCH_DB"
+
+uv run python - <<'PY'
+from datetime import datetime
+from core.memory_store import MemoryStore, VECTOR_DIM
+from core.schema import Memory
+
+DB = "/tmp/devmemory-edge-test"
+store = MemoryStore(DB)
+vec = [0.1] * VECTOR_DIM
+
+def add(id, type, summary, raw_text, repo):
+    store.add(Memory(
+        id=id,
+        type=type,
+        summary=summary,
+        raw_text=raw_text,
+        source="manual-edge-test",
+        repo=repo,
+        timestamp=datetime.utcnow(),
+        tags=[],
+        importance=0.7,
+    ), vec)
+
+add(
+    "failure-login",
+    "failure_note",
+    "pytest test_login.py::test_refreshes_token_on_401 failed",
+    "FAILED tests/test_login.py::test_refreshes_token_on_401 - AssertionError: expected token refresh",
+    "api",
+)
+add(
+    "commit-login",
+    "git_commit",
+    "Fix token refresh regression",
+    "Fix failing tests/test_login.py::test_refreshes_token_on_401 by refreshing token on 401 responses",
+    "api",
+)
+add(
+    "failure-api",
+    "failure_note",
+    "Redis timeout in API user lookup",
+    '''Traceback (most recent call last):
+  File "app/cache.py", line 42, in get_user
+    return client.fetch(user_id)
+TimeoutError: Redis request timed out after 30s''',
+    "api-service",
+)
+add(
+    "failure-worker",
+    "failure_note",
+    "Redis timeout in worker user lookup",
+    '''Traceback (most recent call last):
+  File "worker/cache.py", line 19, in get_user
+    return client.fetch(user_id)
+TimeoutError: Redis request timed out after 30s''',
+    "worker-service",
+)
+print("seeded", store.count(), "memories in", DB)
+PY
+```
+
+**Expect:** `seeded 4 memories in /tmp/devmemory-edge-test`.
+
+### 12.5d. Run edge inference against the scratch DB
+```bash
+uv run python - <<'PY'
+from daemon.jobs.edge_inference import run_edge_inference
+print(run_edge_inference('/tmp/devmemory-edge-test'))
+PY
+```
+**Expect:** `edges_added` is at least `2`:
+- one `fixed_by` edge from `failure-login` to `commit-login`
+- one `related_to` edge between `failure-api` and `failure-worker`
+
+Run it a second time:
+```bash
+uv run python - <<'PY'
+from daemon.jobs.edge_inference import run_edge_inference
+print(run_edge_inference('/tmp/devmemory-edge-test'))
+PY
+```
+**Expect:** `edges_added` is `0` because duplicate edges are skipped.
+
+### 12.5e. Inspect inferred edges directly
+```bash
+uv run python - <<'PY'
+from core.edge_store import EdgeStore
+for edge in EdgeStore('/tmp/devmemory-edge-test').get_all_edges():
+    print(edge['from_id'], edge['edge_type'], edge['to_id'], edge['source'], round(edge['confidence'], 2))
+PY
+```
+**Expect:** Output includes:
+```text
+failure-login fixed_by commit-login auto ...
+failure-api related_to failure-worker auto ...
+```
+
+### 12.5f. Optional: inspect with graph CLI against an isolated DB
+The CLI uses the default DB path, so only do this if you intentionally point your working directory at the scratch DB or temporarily copy the scratch DB into a disposable checkout. Prefer the direct `EdgeStore` inspection above for safe local verification.
+
+---
+
 ## 13. Config Management
 
 ```bash
@@ -517,7 +649,8 @@ uv run pytest core/tests/test_hybrid_search.py -v
 uv run pytest core/tests/test_ranking.py -v
 uv run pytest core/tests/test_context_engine.py -v
 uv run pytest api/tests/test_auth.py -v
-uv run pytest daemon/tests/ -v        # Phase 8 voice pipeline + formatter tests
+uv run pytest daemon/tests/ -v        # daemon jobs, scheduler, edge inference, voice pipeline + formatter tests
+uv run pytest daemon/tests/test_edge_inference.py -v
 uv run pytest tests/test_packaging.py -v
 ```
 **Expect:** All green.

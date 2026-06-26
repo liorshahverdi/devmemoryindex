@@ -158,7 +158,7 @@ This file is a historical master roadmap and contains implementation notes from 
 | `cli/commands/health.py` | **Done** | T1-E. `devmemory health [--json]` — Rich table: type breakdown, importance histogram, stale/low-CTR counts. |
 | `cli/commands/audit.py` | **Done** | T1-D. `devmemory audit [--purge] [--json]` — shows all deprecated memories with reasons. `--purge` permanently deletes them. |
 | `cli/commands/consolidate.py` | **Done** | T1-C. `devmemory consolidate <id1> <id2> ... [--summary "..."]` — merges memories from CLI. |
-| `daemon/jobs/edge_inference.py` | **Done** | T2-A. Background auto-linking: failure_notes → commits/solutions via keyword overlap (≥2 terms → `fixed_by`, ≥3 → `references`). |
+| `daemon/jobs/edge_inference.py` | **Done** | T2-A + Phase 8.2. Background auto-linking: failure_notes → commits/solutions via keyword overlap; test failures → commits via test identifiers; similar stack traces/errors across repos via `related_to`; failure_notes → solutions via shared stack/error signatures. |
 | `daemon/scheduler.py` — edge inference cadence | **Done** | Phase 8.1 follow-up. Weekly Monday daemon job runs `run_edge_inference()`, logs added edges/pairs scanned, and logs failures without killing the daemon. |
 | `cli/commands/graph_cmd.py` | **Done** | Phase 8.1. `devmemory graph <id> [--depth N]` renders the unified memory graph as a Rich tree plus edge table. |
 
@@ -169,7 +169,7 @@ This file is a historical master roadmap and contains implementation notes from 
 **What's next (Strategic Priority Order):**
 
 1. **Phase 8.4** — Root Cause Surfacing (`devmemory why`)
-2. **Phase 8.2** — Expand auto-link inference (test failures → commits, stack traces)
+2. ~~**Phase 8.2** — Expand auto-link inference (test failures → commits, stack traces)~~ ✅ Done
 3. **Phase 10.1** — Verify Cursor MCP compatibility
 4. **Phase 9.1** — Wake word activation
 5. **Phase 10.2** — Cross-tool correlation
@@ -220,7 +220,7 @@ This file is a historical master roadmap and contains implementation notes from 
 | ID | Feature | File(s) | Description | Status |
 |----|---------|---------|-------------|--------|
 | 8.1 | Graph Visualization CLI | `cli/commands/graph_cmd.py`, `daemon/scheduler.py` | `devmemory graph <id> [--depth N]` — Rich tree showing relationships; daemon auto-links baseline edges weekly | Done |
-| 8.2 | Auto-Link Expansion | `daemon/jobs/edge_inference.py` | Expand to: test failures → commits, similar errors across repos, stack trace matching | Not started |
+| 8.2 | Auto-Link Expansion | `daemon/jobs/edge_inference.py` | Expanded to: test failures → commits, similar errors across repos, stack trace matching | Done |
 | 8.3 | Pattern Detection | `core/pattern_detector.py` | Identify recurring failures: "This error appeared 3x this month, always fixed by X" | Not started |
 | 8.4 | Root Cause Surfacing | `cli/commands/why_cmd.py` | `devmemory why "timeout"` — traces causality, surfaces common root causes | Not started |
 | 8.5 | Graph Export | `cli/commands/export.py` | `devmemory export --graph` — export edges as DOT/JSON for visualization tools | Not started |
